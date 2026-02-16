@@ -1,0 +1,32 @@
+{
+  "$schema": "../src-ui/node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Harmony",
+  "version": "0.1.0",
+  "identifier": "com.harmony.desktop",
+  "build": {
+    "frontendDist": "../src-ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm --prefix src-ui run dev",
+    "beforeBuildCommand": "npm --prefix src-ui run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Harmony",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 960,
+        "minHeight": 620,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "nsis"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "nickname": "",
+  "remember_me": true,
+  "ptt_enabled": false,
+  "ptt_hotkey": "AltLeft",
+  "input_device": null,
+  "output_device": null,
+  "output_volume": 80,
+  "auto_mute_on_deafen": true,
+  "server": {
+    "host": "ec2-3-133-108-176.us-east-2.compute.amazonaws.com",
+    "port": 64738,
+    "password": "Hoez312!!!",
+    "default_channel": "Game Night",
+    "allow_insecure_tls": true
+  }
+}

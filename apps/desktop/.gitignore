@@ -1,0 +1,4 @@
+/target
+/src-ui/node_modules
+/src-ui/dist
+/src-tauri/dev-config.json
