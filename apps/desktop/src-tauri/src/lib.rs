@@ -3,15 +3,23 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app_core = core::AppCore::new().expect("failed to initialize app core");
+    let app_core = match core::AppCore::new() {
+        Ok(core) => core,
+        Err(err) => {
+            eprintln!("failed to initialize app core: {err}");
+            return;
+        }
+    };
 
-    tauri::Builder::default()
+    let run_result = tauri::Builder::default()
         .manage(app_core)
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -32,8 +40,12 @@ pub fn run() {
             core::set_ptt_hotkey,
             core::set_input_device,
             core::set_output_device,
-            core::refresh_devices
+            core::refresh_devices,
+            core::send_message
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+
+    if let Err(err) = run_result {
+        eprintln!("error while running tauri application: {err}");
+    }
 }

@@ -3,3 +3,4 @@
 /target/
 /gen/schemas
 /dev-config.json
+/resources/openssl-windows/

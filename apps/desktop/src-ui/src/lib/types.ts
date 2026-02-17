@@ -66,6 +66,21 @@ export interface SelfEvent {
   transmitting: boolean
 }
 
+export interface MessageEvent {
+  actor_session?: string
+  actor_name: string
+  channel_id?: string
+  message: string
+  timestamp_ms: number
+}
+
+export interface UpdateInfo {
+  version: string
+  currentVersion: string
+  notes?: string | null
+  date?: string | null
+}
+
 export interface BootstrapState {
   config: AppConfig
   connection: ConnectionEvent

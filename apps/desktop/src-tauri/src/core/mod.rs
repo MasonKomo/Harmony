@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
 use tauri::{AppHandle, State};
+use tokio::sync::{Mutex, RwLock};
 
 use config::{load_config, save_config_to_path, AppConfig};
 use events::{
@@ -170,6 +170,11 @@ pub struct SetInputDeviceArgs {
 #[derive(Debug, Deserialize)]
 pub struct SetOutputDeviceArgs {
     device_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SendMessageArgs {
+    message: String,
 }
 
 #[tauri::command]
@@ -352,4 +357,19 @@ pub async fn refresh_devices(
     state: State<'_, AppCore>,
 ) -> Result<DevicesEvent, String> {
     state.refresh_devices(&app).await
+}
+
+#[tauri::command]
+pub async fn send_message(
+    _app: AppHandle,
+    state: State<'_, AppCore>,
+    args: SendMessageArgs,
+) -> Result<(), String> {
+    let message = args.message.trim().to_string();
+    if message.is_empty() {
+        return Err("message cannot be empty".to_string());
+    }
+
+    let voice = state.voice.lock().await;
+    voice.send_message(message)
 }

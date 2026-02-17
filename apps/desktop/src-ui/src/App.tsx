@@ -1,5 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Check,
+  Circle,
   LoaderCircle,
   Mic,
   MicOff,
@@ -12,9 +14,12 @@ import {
 
 import {
   bootstrap,
+  checkForUpdate,
   connect,
   disconnect,
+  installCachedUpdate,
   refreshDevices,
+  sendMessage,
   setDeafen,
   setInputDevice,
   setMute,
@@ -28,8 +33,10 @@ import type {
   ConnectionEvent,
   ConnectionState,
   DevicesEvent,
+  MessageEvent,
   RosterEvent,
   SelfEvent,
+  UpdateInfo,
 } from '@/lib/types'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge, type BadgeProps } from '@/components/ui/badge'
@@ -80,6 +87,85 @@ const METER_BAR_COUNT = 20
 const METER_FFT_SIZE = 512
 const METER_GAIN = 3.8
 const METER_SMOOTHING = 0.24
+const CHAT_HISTORY_LIMIT = 300
+
+type ChatDeliveryState = 'pending' | 'confirmed'
+
+type ChatMessage = MessageEvent & {
+  local_id: string
+  is_local_echo: boolean
+  delivery_state: ChatDeliveryState
+  delivery_error?: string | null
+}
+
+const normalizeChatText = (value: string) => value.replace(/\s+/g, ' ').trim()
+const normalizeActorName = (value: string) => value.trim().toLowerCase()
+const normalizeChannelId = (channelId?: string) => channelId ?? ''
+const normalizeOutgoingChannelId = (channelId: string) => (channelId === '0' ? undefined : channelId)
+
+const trimMessageHistory = (messages: ChatMessage[]) =>
+  messages.length > CHAT_HISTORY_LIMIT
+    ? messages.slice(messages.length - CHAT_HISTORY_LIMIT)
+    : messages
+
+const createServerChatMessage = (payload: MessageEvent): ChatMessage => ({
+  ...payload,
+  local_id: `srv-${payload.timestamp_ms}-${Math.random().toString(36).slice(2, 9)}`,
+  is_local_echo: false,
+  delivery_state: 'confirmed',
+  delivery_error: null,
+})
+
+const reconcileIncomingMessage = (
+  previousMessages: ChatMessage[],
+  payload: MessageEvent
+): ChatMessage[] => {
+  const normalizedIncomingMessage = normalizeChatText(payload.message)
+  const normalizedIncomingChannel = normalizeChannelId(payload.channel_id)
+  const normalizedIncomingActor = normalizeActorName(payload.actor_name)
+  let fallbackIndex = -1
+
+  for (let index = 0; index < previousMessages.length; index += 1) {
+    const candidate = previousMessages[index]
+    if (!candidate.is_local_echo || candidate.delivery_state !== 'pending') {
+      continue
+    }
+    if (normalizeChatText(candidate.message) !== normalizedIncomingMessage) {
+      continue
+    }
+    const channelsMatch =
+      normalizedIncomingChannel.length === 0 ||
+      normalizeChannelId(candidate.channel_id) === normalizedIncomingChannel
+    if (!channelsMatch) {
+      continue
+    }
+    if (normalizeActorName(candidate.actor_name) === normalizedIncomingActor) {
+      fallbackIndex = index
+      break
+    }
+    if (fallbackIndex === -1) {
+      fallbackIndex = index
+    }
+  }
+
+  if (fallbackIndex === -1) {
+    return trimMessageHistory([...previousMessages, createServerChatMessage(payload)])
+  }
+
+  const nextMessages = [...previousMessages]
+  nextMessages[fallbackIndex] = {
+    ...nextMessages[fallbackIndex],
+    actor_session: payload.actor_session ?? nextMessages[fallbackIndex].actor_session,
+    actor_name: payload.actor_name,
+    channel_id: payload.channel_id ?? nextMessages[fallbackIndex].channel_id,
+    message: payload.message,
+    timestamp_ms: payload.timestamp_ms,
+    delivery_state: 'confirmed',
+    delivery_error: null,
+  }
+
+  return trimMessageHistory(nextMessages)
+}
 
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null)
@@ -87,6 +173,8 @@ function App() {
   const [roster, setRoster] = useState<RosterEvent>(INITIAL_ROSTER)
   const [devices, setDevices] = useState<DevicesEvent>(INITIAL_DEVICES)
   const [selfState, setSelfState] = useState<SelfEvent>(INITIAL_SELF_STATE)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [chatInput, setChatInput] = useState('')
   const [micLevel, setMicLevel] = useState(0)
   const [micMeterStatus, setMicMeterStatus] = useState<MicMeterStatus>('idle')
   const [nicknameInput, setNicknameInput] = useState('')
@@ -94,14 +182,21 @@ function App() {
   const [outputVolume, setOutputVolume] = useState([80])
   const [loading, setLoading] = useState(true)
   const [actionBusy, setActionBusy] = useState(false)
+  const [chatBusy, setChatBusy] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [updateBusy, setUpdateBusy] = useState(false)
+  const [updateNotice, setUpdateNotice] = useState<string | null>(null)
   const mountedRef = useRef(false)
+  const chatBottomRef = useRef<HTMLDivElement | null>(null)
+  const chatInputRef = useRef<HTMLInputElement | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const meterAnimationRef = useRef<number | null>(null)
+  const localMessageCounterRef = useRef(0)
 
   const stopMicMeter = useCallback(() => {
     if (meterAnimationRef.current !== null) {
@@ -129,9 +224,48 @@ function App() {
     }
   }, [])
 
+  const runUpdateCheck = useCallback(async (showUpToDateNotice: boolean) => {
+    setUpdateBusy(true)
+    if (showUpToDateNotice) {
+      setUpdateNotice('Checking for updates...')
+    }
+    try {
+      const available = await checkForUpdate()
+      if (!available) {
+        setUpdateInfo(null)
+        if (showUpToDateNotice) {
+          setUpdateNotice('You are on the latest version.')
+        }
+        return
+      }
+      setUpdateInfo(available)
+      setUpdateNotice(`Update ${available.version} is available (current ${available.currentVersion}).`)
+    } catch (error) {
+      setUpdateNotice(`Update check failed: ${String(error)}`)
+    } finally {
+      setUpdateBusy(false)
+    }
+  }, [])
+
+  const handleInstallUpdate = useCallback(async () => {
+    if (!updateInfo) {
+      return
+    }
+    setUpdateBusy(true)
+    setUpdateNotice(`Installing update ${updateInfo.version}...`)
+    try {
+      await installCachedUpdate()
+    } catch (error) {
+      setUpdateNotice(`Update install failed: ${String(error)}`)
+    } finally {
+      setUpdateBusy(false)
+    }
+  }, [updateInfo])
+
   useEffect(() => {
     let stopListeners: (() => void) | null = null
     let mounted = true
+    let teardownRequested = false
 
     const setup = async () => {
       try {
@@ -158,21 +292,67 @@ function App() {
         }
       }
 
-      stopListeners = await subscribeCoreEvents({
-        connection: (payload) => setConnection(payload),
-        roster: (payload) => setRoster(payload),
-        devices: (payload) => setDevices(payload),
-        self: (payload) => setSelfState(payload),
+      const registeredListeners = await subscribeCoreEvents({
+        connection: (payload) => {
+          if (!mounted) {
+            return
+          }
+          setConnection(payload)
+        },
+        roster: (payload) => {
+          if (!mounted) {
+            return
+          }
+          setRoster(payload)
+        },
+        devices: (payload) => {
+          if (!mounted) {
+            return
+          }
+          setDevices(payload)
+        },
+        self: (payload) => {
+          if (!mounted) {
+            return
+          }
+          setSelfState(payload)
+        },
+        speaking: (payload) => {
+          if (!mounted) {
+            return
+          }
+          setRoster((prev) => ({
+            ...prev,
+            users: prev.users.map((user) =>
+              user.id === payload.user_id ? { ...user, speaking: payload.speaking } : user
+            ),
+          }))
+        },
+        message: (payload) => {
+          if (!mounted) {
+            return
+          }
+          setMessages((prev) => reconcileIncomingMessage(prev, payload))
+        },
       })
+
+      if (teardownRequested || !mounted) {
+        registeredListeners()
+        return
+      }
+
+      stopListeners = registeredListeners
+      void runUpdateCheck(false)
     }
 
-    setup()
+    void setup()
 
     return () => {
       mounted = false
+      teardownRequested = true
       stopListeners?.()
     }
-  }, [])
+  }, [runUpdateCheck])
 
   const connectionLabel = useMemo(() => {
     const labels: Record<ConnectionState, string> = {
@@ -204,6 +384,18 @@ function App() {
   const joinedUserCount = roster.users.length
   const showConnectedLayout =
     connection.state === 'connected' || connection.state === 'reconnecting'
+  const visibleMessages = useMemo(
+    () => messages.filter((message) => !message.channel_id || message.channel_id === roster.channel.id),
+    [messages, roster.channel.id]
+  )
+  const messageTimeFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    []
+  )
   const renderedMicLevel = selfState.muted ? 0 : micLevel
   const meterFallbackLabel =
     micMeterStatus === 'denied'
@@ -343,6 +535,13 @@ function App() {
     }
   }, [showConnectedLayout, stopMicMeter])
 
+  useEffect(() => {
+    if (!showConnectedLayout || visibleMessages.length === 0) {
+      return
+    }
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [showConnectedLayout, visibleMessages.length])
+
   const handleJoin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!hasNickname) {
@@ -392,11 +591,13 @@ function App() {
 
   const handlePttToggle = async (nextEnabled: boolean) => {
     setErrorMessage(null)
+    const previousPttEnabled = selfState.ptt_enabled
     setSelfState((prev) => ({ ...prev, ptt_enabled: nextEnabled }))
     try {
       await setPtt(nextEnabled)
       setConfig((prev) => (prev ? { ...prev, ptt_enabled: nextEnabled } : prev))
     } catch (error) {
+      setSelfState((prev) => ({ ...prev, ptt_enabled: previousPttEnabled }))
       setErrorMessage(String(error))
     }
   }
@@ -442,6 +643,54 @@ function App() {
       setDevices(next)
     } catch (error) {
       setErrorMessage(String(error))
+    }
+  }
+
+  const handleSendChat = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const message = chatInput.trim()
+    if (!showConnectedLayout || !message || chatBusy) {
+      return
+    }
+
+    setChatBusy(true)
+    setErrorMessage(null)
+    localMessageCounterRef.current += 1
+    const localMessageId = `local-${Date.now()}-${localMessageCounterRef.current}`
+    const pendingMessage: ChatMessage = {
+      local_id: localMessageId,
+      actor_name: nicknameInput.trim() || config?.nickname || 'You',
+      channel_id: normalizeOutgoingChannelId(roster.channel.id),
+      message,
+      timestamp_ms: Date.now(),
+      is_local_echo: true,
+      delivery_state: 'pending',
+      delivery_error: null,
+    }
+    setMessages((prev) => trimMessageHistory([...prev, pendingMessage]))
+    setChatInput('')
+    try {
+      await sendMessage(message)
+      setMessages((prev) =>
+        prev.map((item) =>
+          item.local_id === localMessageId
+            ? { ...item, delivery_state: 'confirmed', delivery_error: null }
+            : item
+        )
+      )
+    } catch (error) {
+      const errorText = String(error)
+      setMessages((prev) =>
+        prev.map((item) =>
+          item.local_id === localMessageId ? { ...item, delivery_error: errorText } : item
+        )
+      )
+      setErrorMessage(errorText)
+    } finally {
+      setChatBusy(false)
+      requestAnimationFrame(() => {
+        chatInputRef.current?.focus()
+      })
     }
   }
 
@@ -563,6 +812,43 @@ function App() {
                       Server: {config.server.host}:{config.server.port}
                     </p>
                     <p className="mt-1">Channel target: {config.server.default_channel}</p>
+                  </div>
+
+                  <div className="rounded-md border bg-secondary/40 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium">App updates</p>
+                        <p className="text-xs text-muted-foreground">
+                          {updateInfo
+                            ? `Update ${updateInfo.version} is ready to install.`
+                            : 'Check GitHub release updates for this build.'}
+                        </p>
+                      </div>
+                      <Button
+                        variant="secondary"
+                        onClick={() => void runUpdateCheck(true)}
+                        disabled={updateBusy}
+                      >
+                        {updateBusy ? (
+                          <LoaderCircle className="size-4 animate-spin" />
+                        ) : (
+                          <RefreshCw className="size-4" />
+                        )}
+                        Check now
+                      </Button>
+                    </div>
+                    {updateInfo ? (
+                      <Button
+                        className="mt-3 w-full"
+                        onClick={() => void handleInstallUpdate()}
+                        disabled={updateBusy}
+                      >
+                        Install update {updateInfo.version}
+                      </Button>
+                    ) : null}
+                    {updateNotice ? (
+                      <p className="mt-3 text-xs text-muted-foreground">{updateNotice}</p>
+                    ) : null}
                   </div>
 
                   <Button variant="secondary" onClick={handleRefreshDevices} className="w-full">
@@ -778,26 +1064,90 @@ function App() {
             <Card className="bg-card/95 flex h-[560px] flex-col overflow-hidden">
               <CardHeader>
                 <CardTitle>Text chat</CardTitle>
-                <CardDescription>Upcoming feature (disabled for now)</CardDescription>
+                <CardDescription>
+                  Channel: {roster.channel.name} ({visibleMessages.length} messages this session)
+                </CardDescription>
               </CardHeader>
               <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
-                <ScrollArea className="min-h-0 flex-1 rounded-md border border-dashed bg-secondary/20 p-4">
-                  <div className="space-y-2 text-sm text-muted-foreground">
-                    <p>This pane will host in-channel text chat.</p>
-                    <p>Voice controls remain active in the left pane.</p>
+                <ScrollArea className="min-h-0 flex-1">
+                  <div className="space-y-2 pr-4">
+                    {visibleMessages.length === 0 ? (
+                      <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                        No channel messages yet.
+                      </div>
+                    ) : (
+                      visibleMessages.map((message) => (
+                        <div
+                          key={message.local_id}
+                          className={cn(
+                            'rounded-md border bg-background/70 px-3 py-2',
+                            message.is_local_echo ? 'relative pb-6' : '',
+                            message.delivery_error ? 'border-destructive/50' : ''
+                          )}
+                        >
+                          <div className="mb-1 flex items-center justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <p className="truncate text-xs font-semibold">{message.actor_name}</p>
+                            </div>
+                            <p className="shrink-0 text-[11px] text-muted-foreground">
+                              {messageTimeFormatter.format(new Date(message.timestamp_ms))}
+                            </p>
+                          </div>
+                          <p className="whitespace-pre-wrap break-words text-sm">{message.message}</p>
+                          {message.is_local_echo ? (
+                            message.delivery_state === 'confirmed' ? (
+                              <span
+                                className="absolute bottom-2 right-2 inline-flex size-4 items-center justify-center rounded-full bg-emerald-500 text-white ring-1 ring-emerald-200/70 shadow-sm"
+                                aria-label="Message delivered"
+                                title="Delivered"
+                              >
+                                <Check className="size-2.5 stroke-[3]" />
+                              </span>
+                            ) : (
+                              <Circle
+                                className={cn(
+                                  'absolute bottom-2 right-2 size-3.5',
+                                  message.delivery_error ? 'text-destructive' : 'text-muted-foreground'
+                                )}
+                                aria-label={
+                                  message.delivery_error
+                                    ? 'Message pending confirmation (send failed)'
+                                    : 'Message pending confirmation'
+                                }
+                              />
+                            )
+                          ) : null}
+                        </div>
+                      ))
+                    )}
+                    <div ref={chatBottomRef} />
                   </div>
                 </ScrollArea>
-                <div className="space-y-2">
+                <form onSubmit={handleSendChat} className="space-y-2" autoComplete="off">
                   <Label htmlFor="text-chat-input">Message</Label>
-                  <Input
-                    id="text-chat-input"
-                    placeholder="Text chat is disabled for now"
-                    disabled
-                  />
-                </div>
-                <Button disabled className="w-full">
-                  Send
-                </Button>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      ref={chatInputRef}
+                      id="text-chat-input"
+                      placeholder="Type a message..."
+                      value={chatInput}
+                      onChange={(event) => setChatInput(event.target.value)}
+                      maxLength={1024}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      disabled={!showConnectedLayout || chatBusy}
+                    />
+                    <Button
+                      type="submit"
+                      className="px-5"
+                      disabled={!showConnectedLayout || chatBusy || chatInput.trim().length === 0}
+                    >
+                      Send
+                    </Button>
+                  </div>
+                </form>
               </CardContent>
             </Card>
           ) : null}

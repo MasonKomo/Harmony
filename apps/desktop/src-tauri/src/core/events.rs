@@ -6,6 +6,7 @@ pub const EVENT_ROSTER: &str = "core/roster";
 pub const EVENT_SPEAKING: &str = "core/speaking";
 pub const EVENT_DEVICES: &str = "core/devices";
 pub const EVENT_SELF: &str = "core/self";
+pub const EVENT_MESSAGE: &str = "core/message";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -104,11 +105,29 @@ impl Default for SelfEvent {
     }
 }
 
-fn emit<R: Runtime, T: Serialize>(app: &AppHandle<R>, event_name: &str, payload: &T) -> Result<(), String> {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageEvent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_session: Option<String>,
+    pub actor_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    pub message: String,
+    pub timestamp_ms: u64,
+}
+
+fn emit<R: Runtime, T: Serialize>(
+    app: &AppHandle<R>,
+    event_name: &str,
+    payload: &T,
+) -> Result<(), String> {
     app.emit(event_name, payload).map_err(|err| err.to_string())
 }
 
-pub fn emit_connection<R: Runtime>(app: &AppHandle<R>, payload: &ConnectionEvent) -> Result<(), String> {
+pub fn emit_connection<R: Runtime>(
+    app: &AppHandle<R>,
+    payload: &ConnectionEvent,
+) -> Result<(), String> {
     emit(app, EVENT_CONNECTION, payload)
 }
 
@@ -116,7 +135,10 @@ pub fn emit_roster<R: Runtime>(app: &AppHandle<R>, payload: &RosterEvent) -> Res
     emit(app, EVENT_ROSTER, payload)
 }
 
-pub fn emit_speaking<R: Runtime>(app: &AppHandle<R>, payload: &SpeakingEvent) -> Result<(), String> {
+pub fn emit_speaking<R: Runtime>(
+    app: &AppHandle<R>,
+    payload: &SpeakingEvent,
+) -> Result<(), String> {
     emit(app, EVENT_SPEAKING, payload)
 }
 
@@ -126,4 +148,8 @@ pub fn emit_devices<R: Runtime>(app: &AppHandle<R>, payload: &DevicesEvent) -> R
 
 pub fn emit_self<R: Runtime>(app: &AppHandle<R>, payload: &SelfEvent) -> Result<(), String> {
     emit(app, EVENT_SELF, payload)
+}
+
+pub fn emit_message<R: Runtime>(app: &AppHandle<R>, payload: &MessageEvent) -> Result<(), String> {
+    emit(app, EVENT_MESSAGE, payload)
 }

@@ -256,7 +256,10 @@ mod tests {
         let migrated = apply_legacy_server_migration(&mut config);
         assert!(migrated);
         assert_eq!(config.server.host, DEFAULT_SERVER_HOST);
-        assert_eq!(config.server.password.as_deref(), Some(DEFAULT_USER_PASSWORD));
+        assert_eq!(
+            config.server.password.as_deref(),
+            Some(DEFAULT_USER_PASSWORD)
+        );
     }
 
     #[test]
