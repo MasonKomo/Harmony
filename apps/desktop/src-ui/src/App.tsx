@@ -705,7 +705,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="mx-auto max-w-6xl px-5 py-6">
+      <div className="mx-auto w-full px-5 py-6">
         <header className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Harmony</p>
@@ -871,20 +871,20 @@ function App() {
           className={cn(
             'transition-all duration-500 ease-out',
             showConnectedLayout
-              ? 'grid gap-4 lg:grid-cols-[1fr_1fr]'
+              ? 'grid gap-4 lg:h-[calc(100vh-11rem)] lg:grid-cols-[1fr_1fr]'
               : 'flex min-h-[calc(100vh-11rem)] items-center justify-center'
           )}
         >
           <div
             className={cn(
               'w-full transition-all duration-500 ease-out',
-              showConnectedLayout ? 'lg:translate-x-0' : 'max-w-md lg:translate-x-10'
+              showConnectedLayout ? 'lg:h-full lg:translate-x-0' : 'max-w-md lg:translate-x-10'
             )}
           >
             <Card
               className={cn(
                 'bg-card/95 transition-all duration-500',
-                showConnectedLayout ? 'flex h-[560px] flex-col overflow-hidden' : ''
+                showConnectedLayout ? 'flex min-h-0 lg:h-full flex-col overflow-hidden' : ''
               )}
             >
               {showConnectedLayout ? (
@@ -1061,7 +1061,7 @@ function App() {
           </div>
 
           {showConnectedLayout ? (
-            <Card className="bg-card/95 flex h-[560px] flex-col overflow-hidden">
+            <Card className="bg-card/95 flex min-h-0 lg:h-full flex-col overflow-hidden">
               <CardHeader>
                 <CardTitle>Text chat</CardTitle>
                 <CardDescription>
