@@ -2,10 +2,13 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   Check,
   Circle,
+  Hash,
   LoaderCircle,
+  LogOut,
   Mic,
   MicOff,
   RefreshCw,
+  Send,
   Settings2,
   Volume2,
   VolumeOff,
@@ -28,6 +31,7 @@ import {
   setPttHotkey,
   subscribeCoreEvents,
 } from '@/lib/core'
+import { getVersion } from '@tauri-apps/api/app'
 import type {
   AppConfig,
   ConnectionEvent,
@@ -97,6 +101,15 @@ type ChatMessage = MessageEvent & {
   delivery_state: ChatDeliveryState
   delivery_error?: string | null
 }
+
+interface MessageGroup {
+  actorName: string
+  actorSession?: string
+  messages: ChatMessage[]
+  firstTimestamp: number
+}
+
+const MESSAGE_GROUP_WINDOW_MS = 5 * 60 * 1000 // 5 minutes
 
 const normalizeChatText = (value: string) => value.replace(/\s+/g, ' ').trim()
 const normalizeActorName = (value: string) => value.trim().toLowerCase()
@@ -188,6 +201,7 @@ function App() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
   const [updateNotice, setUpdateNotice] = useState<string | null>(null)
+  const [appVersion, setAppVersion] = useState<string | null>(null)
   const mountedRef = useRef(false)
   const chatBottomRef = useRef<HTMLDivElement | null>(null)
   const chatInputRef = useRef<HTMLInputElement | null>(null)
@@ -354,6 +368,24 @@ function App() {
     }
   }, [runUpdateCheck])
 
+  useEffect(() => {
+    let active = true
+    void getVersion()
+      .then((version) => {
+        if (active) {
+          setAppVersion(version)
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setAppVersion(null)
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
   const connectionLabel = useMemo(() => {
     const labels: Record<ConnectionState, string> = {
       connected: 'Connected',
@@ -388,6 +420,29 @@ function App() {
     () => messages.filter((message) => !message.channel_id || message.channel_id === roster.channel.id),
     [messages, roster.channel.id]
   )
+
+  const groupedMessages = useMemo(() => {
+    const groups: MessageGroup[] = []
+    for (const msg of visibleMessages) {
+      const lastGroup = groups[groups.length - 1]
+      const sameUser = lastGroup?.actorSession === msg.actor_session && lastGroup?.actorName === msg.actor_name
+      const lastMessage = lastGroup?.messages[lastGroup.messages.length - 1]
+      const withinWindow = lastMessage && msg.timestamp_ms - lastMessage.timestamp_ms < MESSAGE_GROUP_WINDOW_MS
+
+      if (sameUser && withinWindow) {
+        lastGroup.messages.push(msg)
+      } else {
+        groups.push({
+          actorName: msg.actor_name,
+          actorSession: msg.actor_session,
+          messages: [msg],
+          firstTimestamp: msg.timestamp_ms,
+        })
+      }
+    }
+    return groups
+  }, [visibleMessages])
+
   const messageTimeFormatter = useMemo(
     () =>
       new Intl.DateTimeFormat(undefined, {
@@ -704,13 +759,13 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="mx-auto w-full px-5 py-6">
-        <header className="mb-6 flex items-center justify-between">
+    <div className="h-screen overflow-hidden bg-background">
+      <div className="flex h-full w-full flex-col overflow-hidden">
+        <header className="flex items-center justify-between border-b border-border/40 px-5 py-4">
           <div className="flex items-center gap-2">
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Harmony</p>
             <span className="rounded-md border border-border/70 bg-secondary/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
-              v0.12
+              {appVersion ? `v${appVersion}` : 'v...'}
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -817,11 +872,11 @@ function App() {
                   <div className="rounded-md border bg-secondary/40 p-3">
                     <div className="flex items-center justify-between gap-2">
                       <div>
-                        <p className="text-sm font-medium">App updates</p>
+                        <p className="text-sm font-medium">Harmony Voice</p>
                         <p className="text-xs text-muted-foreground">
                           {updateInfo
                             ? `Update ${updateInfo.version} is ready to install.`
-                            : 'Check GitHub release updates for this build.'}
+                            : `Version ${appVersion ?? '...'}`}
                         </p>
                       </div>
                       <Button
@@ -834,7 +889,7 @@ function App() {
                         ) : (
                           <RefreshCw className="size-4" />
                         )}
-                        Check now
+                        Check for updates
                       </Button>
                     </div>
                     {updateInfo ? (
@@ -862,274 +917,248 @@ function App() {
         </header>
 
         {errorMessage ? (
-          <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div className="mx-5 mt-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {errorMessage}
           </div>
         ) : null}
 
-        <div
-          className={cn(
-            'transition-all duration-500 ease-out',
-            showConnectedLayout
-              ? 'grid gap-4 lg:h-[calc(100vh-11rem)] lg:grid-cols-[1fr_1fr]'
-              : 'flex min-h-[calc(100vh-11rem)] items-center justify-center'
-          )}
-        >
-          <div
-            className={cn(
-              'w-full transition-all duration-500 ease-out',
-              showConnectedLayout ? 'lg:h-full lg:translate-x-0' : 'max-w-md lg:translate-x-10'
-            )}
-          >
-            <Card
-              className={cn(
-                'bg-card/95 transition-all duration-500',
-                showConnectedLayout ? 'flex min-h-0 lg:h-full flex-col overflow-hidden' : ''
-              )}
-            >
-              {showConnectedLayout ? (
-                <>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Waves className="size-4 text-primary" />
-                      {roster.channel.name}
-                    </CardTitle>
-                    <CardDescription>{joinedUserCount} connected user(s)</CardDescription>
-                  </CardHeader>
-                  <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
-                    <ScrollArea className="min-h-0 flex-1 pr-2">
-                      <div className="space-y-2">
-                        {roster.users.length === 0 ? (
-                          <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                            Nobody in channel yet.
-                          </div>
-                        ) : (
-                          roster.users.map((user) => (
-                            <div
-                              key={user.id}
-                              className="flex items-center justify-between rounded-md border bg-secondary/30 px-3 py-2"
-                            >
-                              <div className="flex items-center gap-2">
-                                <Avatar>
-                                  <AvatarFallback>
-                                    {user.name.slice(0, 2).toUpperCase()}
-                                  </AvatarFallback>
-                                </Avatar>
-                                <div>
-                                  <p className="text-sm font-medium">{user.name}</p>
-                                  <p className="text-xs text-muted-foreground">ID: {user.id}</p>
-                                </div>
-                              </div>
-                              <div className="flex gap-2">
-                                {user.muted ? <Badge variant="danger">Muted</Badge> : null}
-                                {user.deafened ? <Badge variant="danger">Deaf</Badge> : null}
-                                {user.speaking ? <Badge variant="success">Speaking</Badge> : null}
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </ScrollArea>
+        {showConnectedLayout ? (
+          <div className="flex min-h-0 flex-1 overflow-hidden bg-card/30">
+            {/* Sidebar */}
+            <aside className="flex min-h-0 w-60 flex-shrink-0 flex-col border-r border-border/50 bg-card/60">
+              {/* Channel header */}
+              <div className="border-b px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Waves className="size-4 text-primary" />
+                  <h2 className="font-semibold">{roster.channel.name}</h2>
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {joinedUserCount} online
+                </p>
+              </div>
 
-                    <div className="mt-auto space-y-3">
-                      <div className="rounded-md border px-3 py-2">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-muted-foreground">Transmitting</span>
-                          <Badge variant={selfState.transmitting ? 'success' : 'secondary'}>
-                            {selfState.transmitting ? 'Live' : 'Idle'}
-                          </Badge>
-                        </div>
-                        <div className="mt-2 flex items-center gap-3">
-                          {micMeterStatus === 'active' || micMeterStatus === 'idle' ? (
-                            <>
-                              <div
-                                className={cn(
-                                  'flex h-8 flex-1 items-end gap-1 rounded-md border bg-secondary/30 px-2 py-1',
-                                  selfState.muted ? 'opacity-55' : 'opacity-100'
-                                )}
-                                aria-hidden="true"
-                              >
-                                {meterBars.map((bar) => (
-                                  <div
-                                    key={bar.id}
-                                    className={cn(
-                                      'flex-1 rounded-sm bg-primary transition-[height,opacity] duration-75 ease-linear',
-                                      selfState.muted && 'bg-muted-foreground'
-                                    )}
-                                    style={{ height: bar.height, opacity: bar.opacity }}
-                                  />
-                                ))}
-                              </div>
-                              <span className="w-12 text-right font-mono text-[11px] text-muted-foreground">
-                                {selfState.muted ? 'Muted' : `${Math.round(renderedMicLevel * 100)}%`}
-                              </span>
-                            </>
-                          ) : (
-                            <p className="text-xs text-muted-foreground">{meterFallbackLabel}</p>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-2">
-                        <Button
-                          type="button"
-                          variant={selfState.muted ? 'destructive' : 'outline'}
-                          onClick={() => void handleMuteToggle(!selfState.muted)}
-                        >
-                          {selfState.muted ? (
-                            <MicOff className="size-4" />
-                          ) : (
-                            <Mic className="size-4" />
-                          )}
-                          {selfState.muted ? 'Muted' : 'Mute'}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant={selfState.deafened ? 'destructive' : 'outline'}
-                          onClick={() => void handleDeafenToggle(!selfState.deafened)}
-                        >
-                          {selfState.deafened ? (
-                            <VolumeOff className="size-4" />
-                          ) : (
-                            <Volume2 className="size-4" />
-                          )}
-                          {selfState.deafened ? 'Deafened' : 'Deafen'}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          disabled={connection.state === 'disconnected' || actionBusy}
-                          onClick={handleDisconnect}
-                        >
-                          Disconnect
-                        </Button>
-                      </div>
-
-                      {connection.reason ? (
-                        <p className="text-xs text-muted-foreground">{connection.reason}</p>
-                      ) : null}
-                    </div>
-                  </CardContent>
-                </>
-              ) : (
-                <>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Waves className="size-4 text-primary" />
-                      Join voice
-                    </CardTitle>
-                    <CardDescription>
-                      Enter your username to connect to {config.server.default_channel}.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <form onSubmit={handleJoin} className="space-y-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="username">Username</Label>
-                        <Input
-                          id="username"
-                          placeholder="Your in-game name"
-                          value={nicknameInput}
-                          onChange={(event) => setNicknameInput(event.target.value)}
-                          maxLength={32}
-                        />
-                      </div>
-                      {isSuperuserRoute ? (
-                        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                          Superuser route active: this will authenticate as SuperUser.
-                        </div>
-                      ) : null}
-                      <Button type="submit" className="w-full" disabled={!canJoin}>
-                        {isConnectingLike ? (
-                          <>
-                            <LoaderCircle className="size-4 animate-spin" />
-                            Connecting...
-                          </>
-                        ) : (
-                          'Connect'
-                        )}
-                      </Button>
-                    </form>
-
-                    {connection.reason ? (
-                      <p className="text-xs text-muted-foreground">{connection.reason}</p>
-                    ) : null}
-                  </CardContent>
-                </>
-              )}
-            </Card>
-          </div>
-
-          {showConnectedLayout ? (
-            <Card className="bg-card/95 flex min-h-0 lg:h-full flex-col overflow-hidden">
-              <CardHeader>
-                <CardTitle>Text chat</CardTitle>
-                <CardDescription>
-                  Channel: {roster.channel.name} ({visibleMessages.length} messages this session)
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex min-h-0 flex-1 flex-col gap-4">
-                <ScrollArea className="min-h-0 flex-1">
-                  <div className="space-y-2 pr-4">
-                    {visibleMessages.length === 0 ? (
-                      <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-                        No channel messages yet.
-                      </div>
-                    ) : (
-                      visibleMessages.map((message) => (
+              {/* User list */}
+              <ScrollArea className="flex-1">
+                <div className="p-2">
+                  <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Voice Connected — {joinedUserCount}
+                  </p>
+                  {roster.users.length === 0 ? (
+                    <p className="px-2 text-xs text-muted-foreground">No users connected</p>
+                  ) : (
+                    <div className="space-y-0.5">
+                      {roster.users.map((user) => (
                         <div
-                          key={message.local_id}
+                          key={user.id}
                           className={cn(
-                            'rounded-md border bg-background/70 px-3 py-2',
-                            message.is_local_echo ? 'relative pb-6' : '',
-                            message.delivery_error ? 'border-destructive/50' : ''
+                            'flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors duration-150 hover:bg-secondary/50',
+                            user.speaking && 'bg-emerald-500/10'
                           )}
                         >
-                          <div className="mb-1 flex items-center justify-between gap-3">
-                            <div className="flex min-w-0 items-center gap-1.5">
-                              <p className="truncate text-xs font-semibold">{message.actor_name}</p>
-                            </div>
-                            <p className="shrink-0 text-[11px] text-muted-foreground">
-                              {messageTimeFormatter.format(new Date(message.timestamp_ms))}
-                            </p>
+                          <div className="relative">
+                            <Avatar className="size-8">
+                              <AvatarFallback className="text-xs">
+                                {user.name.slice(0, 2).toUpperCase()}
+                              </AvatarFallback>
+                            </Avatar>
+                            {user.speaking ? (
+                              <span className="absolute -bottom-0.5 -right-0.5 size-3 rounded-full border-2 border-card bg-emerald-500" />
+                            ) : null}
                           </div>
-                          <p className="whitespace-pre-wrap break-words text-sm">{message.message}</p>
-                          {message.is_local_echo ? (
-                            message.delivery_state === 'confirmed' ? (
-                              <span
-                                className="absolute bottom-2 right-2 inline-flex size-4 items-center justify-center rounded-full bg-emerald-500 text-white ring-1 ring-emerald-200/70 shadow-sm"
-                                aria-label="Message delivered"
-                                title="Delivered"
-                              >
-                                <Check className="size-2.5 stroke-[3]" />
-                              </span>
-                            ) : (
-                              <Circle
-                                className={cn(
-                                  'absolute bottom-2 right-2 size-3.5',
-                                  message.delivery_error ? 'text-destructive' : 'text-muted-foreground'
-                                )}
-                                aria-label={
-                                  message.delivery_error
-                                    ? 'Message pending confirmation (send failed)'
-                                    : 'Message pending confirmation'
-                                }
-                              />
-                            )
-                          ) : null}
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">{user.name}</p>
+                            <div className="flex items-center gap-1">
+                              {user.muted ? (
+                                <MicOff className="size-3 text-destructive" />
+                              ) : null}
+                              {user.deafened ? (
+                                <VolumeOff className="size-3 text-destructive" />
+                              ) : null}
+                              {!user.muted && !user.deafened && user.speaking ? (
+                                <span className="text-[10px] text-emerald-500">Speaking</span>
+                              ) : null}
+                            </div>
+                          </div>
                         </div>
-                      ))
-                    )}
-                    <div ref={chatBottomRef} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </ScrollArea>
+
+              {/* Voice controls */}
+              <div className="mt-auto border-t bg-secondary/30 p-2">
+                {/* Mic meter */}
+                <div className="mb-2 rounded-md bg-background/50 px-2 py-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-muted-foreground">
+                      {selfState.transmitting ? 'Transmitting' : 'Voice'}
+                    </span>
+                    <span className={cn('font-medium', selfState.transmitting ? 'text-emerald-500' : 'text-muted-foreground')}>
+                      {selfState.muted ? 'Muted' : selfState.transmitting ? 'Live' : 'Idle'}
+                    </span>
                   </div>
-                </ScrollArea>
-                <form onSubmit={handleSendChat} className="space-y-2" autoComplete="off">
-                  <Label htmlFor="text-chat-input">Message</Label>
-                  <div className="flex items-center gap-2">
+                  {(micMeterStatus === 'active' || micMeterStatus === 'idle') ? (
+                    <div
+                      className={cn(
+                        'mt-1.5 flex h-5 items-end gap-0.5 rounded bg-secondary/50 px-1.5 py-0.5',
+                        selfState.muted && 'opacity-50'
+                      )}
+                      aria-hidden="true"
+                    >
+                      {meterBars.map((bar) => (
+                        <div
+                          key={bar.id}
+                          className={cn(
+                            'flex-1 rounded-sm bg-primary transition-[height,opacity] duration-75 ease-linear',
+                            selfState.muted && 'bg-muted-foreground'
+                          )}
+                          style={{ height: bar.height, opacity: bar.opacity }}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-[10px] text-muted-foreground">{meterFallbackLabel}</p>
+                  )}
+                </div>
+
+                {/* Control buttons */}
+                <div className="flex gap-1">
+                  <Button
+                    type="button"
+                    variant={selfState.muted ? 'destructive' : 'ghost'}
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => void handleMuteToggle(!selfState.muted)}
+                  >
+                    {selfState.muted ? (
+                      <MicOff className="size-4" />
+                    ) : (
+                      <Mic className="size-4" />
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={selfState.deafened ? 'destructive' : 'ghost'}
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => void handleDeafenToggle(!selfState.deafened)}
+                  >
+                    {selfState.deafened ? (
+                      <VolumeOff className="size-4" />
+                    ) : (
+                      <Volume2 className="size-4" />
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="flex-1 text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                    disabled={connection.state === 'disconnected' || actionBusy}
+                    onClick={handleDisconnect}
+                  >
+                    <LogOut className="size-4" />
+                  </Button>
+                </div>
+
+                {connection.reason ? (
+                  <p className="mt-1.5 text-[10px] text-muted-foreground">{connection.reason}</p>
+                ) : null}
+              </div>
+            </aside>
+
+            {/* Main chat area */}
+            <main className="flex min-h-0 flex-1 flex-col">
+              {/* Chat header */}
+              <div className="flex items-center gap-2 border-b border-border/50 px-4 py-3 shadow-sm">
+                <Hash className="size-5 text-muted-foreground" />
+                <h2 className="font-semibold">{roster.channel.name}</h2>
+                <span className="ml-auto text-xs text-muted-foreground">
+                  {visibleMessages.length} messages
+                </span>
+              </div>
+
+              {/* Messages */}
+              <ScrollArea className="min-h-0 flex-1">
+                <div className="py-4 pr-4">
+                  {groupedMessages.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center px-4 py-12 text-center">
+                      <Hash className="mb-3 size-12 text-muted-foreground/50" />
+                      <h3 className="font-semibold">Welcome to #{roster.channel.name}</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        This is the start of your conversation.
+                      </p>
+                    </div>
+                  ) : (
+                    groupedMessages.map((group, groupIdx) => (
+                      <div
+                        key={`${group.actorSession ?? group.actorName}-${group.firstTimestamp}`}
+                        className={cn(
+                          'group flex gap-4 px-4 py-0.5 transition-colors duration-100 hover:bg-secondary/20',
+                          groupIdx === 0 && 'mt-2'
+                        )}
+                      >
+                        <Avatar className="mt-0.5 size-10 flex-shrink-0">
+                          <AvatarFallback>
+                            {group.actorName.slice(0, 2).toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline gap-2">
+                            <span className="font-medium">{group.actorName}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {messageTimeFormatter.format(new Date(group.firstTimestamp))}
+                            </span>
+                          </div>
+                          {group.messages.map((msg) => (
+                            <div key={msg.local_id} className="relative pr-6">
+                              <p
+                                className={cn(
+                                  'whitespace-pre-wrap break-words text-[15px] leading-relaxed text-foreground/90',
+                                  msg.delivery_error && 'text-destructive/80'
+                                )}
+                              >
+                                {msg.message}
+                              </p>
+                              {msg.is_local_echo ? (
+                                msg.delivery_state === 'confirmed' ? (
+                                  <Check
+                                    className="absolute right-1 top-1 size-3 text-emerald-500"
+                                    aria-label="Message delivered"
+                                  />
+                                ) : (
+                                  <Circle
+                                    className={cn(
+                                      'absolute right-1 top-1 size-3',
+                                      msg.delivery_error ? 'text-destructive' : 'text-muted-foreground'
+                                    )}
+                                    aria-label={
+                                      msg.delivery_error
+                                        ? 'Message pending confirmation (send failed)'
+                                        : 'Message pending confirmation'
+                                    }
+                                  />
+                                )
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                  <div ref={chatBottomRef} />
+                </div>
+              </ScrollArea>
+
+              {/* Message input */}
+              <div className="border-t border-border/50 p-4">
+                <form onSubmit={handleSendChat} autoComplete="off">
+                  <div className="flex items-center gap-2 rounded-lg bg-secondary/40 px-4 py-2.5 transition-colors focus-within:bg-secondary/60">
                     <Input
                       ref={chatInputRef}
                       id="text-chat-input"
-                      placeholder="Type a message..."
+                      placeholder={`Message #${roster.channel.name}`}
                       value={chatInput}
                       onChange={(event) => setChatInput(event.target.value)}
                       maxLength={1024}
@@ -1138,20 +1167,70 @@ function App() {
                       autoCapitalize="off"
                       spellCheck={false}
                       disabled={!showConnectedLayout || chatBusy}
+                      className="flex-1 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
                     />
                     <Button
                       type="submit"
-                      className="px-5"
+                      size="sm"
+                      variant="ghost"
+                      className="size-8 p-0 text-muted-foreground hover:text-foreground"
                       disabled={!showConnectedLayout || chatBusy || chatInput.trim().length === 0}
                     >
-                      Send
+                      <Send className="size-4" />
                     </Button>
                   </div>
                 </form>
+              </div>
+            </main>
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 items-center justify-center px-5">
+            <Card className="w-full max-w-md bg-card/95">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Waves className="size-4 text-primary" />
+                  Join voice
+                </CardTitle>
+                <CardDescription>
+                  Enter your username to connect.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <form onSubmit={handleJoin} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="username">Username</Label>
+                    <Input
+                      id="username"
+                      placeholder="Your in-game name"
+                      value={nicknameInput}
+                      onChange={(event) => setNicknameInput(event.target.value)}
+                      maxLength={32}
+                    />
+                  </div>
+                  {isSuperuserRoute ? (
+                    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                      Superuser route active: this will authenticate as SuperUser.
+                    </div>
+                  ) : null}
+                  <Button type="submit" className="w-full" disabled={!canJoin}>
+                    {isConnectingLike ? (
+                      <>
+                        <LoaderCircle className="size-4 animate-spin" />
+                        Connecting...
+                      </>
+                    ) : (
+                      'Connect'
+                    )}
+                  </Button>
+                </form>
+
+                {connection.reason ? (
+                  <p className="text-xs text-muted-foreground">{connection.reason}</p>
+                ) : null}
               </CardContent>
             </Card>
-          ) : null}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -8,8 +8,12 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "tauri:dev": "cd ../src-tauri && npm --prefix ../src-ui exec -- tauri dev",
-    "tauri:build": "cd ../src-tauri && npm --prefix ../src-ui exec -- tauri build"
+    "tauri:dev": "npm run tauri:dev:windows",
+    "tauri:build": "npm run tauri:build:windows",
+    "tauri:dev:windows": "cd ../src-tauri && npm --prefix ../src-ui exec -- tauri dev --config tauri.windows.conf.json",
+    "tauri:build:windows": "cd ../src-tauri && npm --prefix ../src-ui exec -- tauri build --config tauri.windows.conf.json",
+    "tauri:dev:macos": "cd ../src-tauri && OPUS_BUNDLED=1 npm --prefix ../src-ui exec -- tauri dev --config tauri.macos.conf.json",
+    "tauri:build:macos": "cd ../src-tauri && OPUS_BUNDLED=1 npm --prefix ../src-ui exec -- tauri build --config tauri.macos.conf.json"
   },
   "dependencies": {
     "@radix-ui/react-avatar": "^1.1.11",

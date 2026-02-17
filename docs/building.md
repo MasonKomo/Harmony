@@ -13,7 +13,7 @@ This doc covers:
 
 ### Required on both platforms
 
-- Node.js 20+ (npm included)
+- Node.js `20.19+` or `22.12+` (npm included)
 - Rust (stable) via `rustup`
 
 ```powershell
@@ -34,10 +34,20 @@ cargo -V
 ### macOS-only prerequisites
 
 - Xcode Command Line Tools
+- CMake (`brew install cmake`)
 
 ```bash
 xcode-select --install
 ```
+
+### Command style (important)
+
+All command snippets below assume you are in repo root and use `--prefix` paths.
+
+- Good: `npm ci --prefix apps/desktop/src-ui`
+- Bad: `cd apps/desktop/src-ui` and then `npm ci --prefix apps/desktop/src-ui` (this doubles the path and fails with ENOENT)
+
+On Apple Silicon, avoid x86_64 Homebrew-only OpenSSL/Opus for local arm64 builds. The macOS scripts now force bundled Opus and vendored OpenSSL for architecture-safe linking.
 
 ---
 
@@ -46,16 +56,14 @@ xcode-select --install
 From repo root:
 
 ```powershell
-cd apps/desktop/src-ui
-npm ci
-npm run tauri:dev
+npm ci --prefix apps/desktop/src-ui
+npm --prefix apps/desktop/src-ui run tauri:dev:windows
 ```
 
 Production binary (no installer):
 
 ```powershell
-cd ../src-tauri
-cargo build --release
+cargo build --release --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
 Output binary:
@@ -69,16 +77,14 @@ Output binary:
 From repo root:
 
 ```bash
-cd apps/desktop/src-ui
-npm ci
-npm run tauri:dev
+npm ci --prefix apps/desktop/src-ui
+npm --prefix apps/desktop/src-ui run tauri:dev:macos
 ```
 
 Production binary (no installer):
 
 ```bash
-cd ../src-tauri
-cargo build --release
+cargo build --release --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
 Output binary:
@@ -92,14 +98,14 @@ Output binary:
 From repo root:
 
 ```powershell
-cd apps/desktop/src-ui
-npm ci
-npm run tauri:build
+npm ci --prefix apps/desktop/src-ui
+npm --prefix apps/desktop/src-ui run tauri:build:windows
 ```
 
 What this does in current config:
 
 - Builds the UI
+- Uses `apps/desktop/src-tauri/tauri.windows.conf.json`
 - Runs `apps/desktop/src-tauri/scripts/prepare-openssl-runtime.ps1`
 - Bundles with NSIS (`bundle.targets = "nsis"`)
 
@@ -121,9 +127,8 @@ Runtime endpoint is:
 From repo root:
 
 ```powershell
-cd apps/desktop/src-tauri
 $env:HARMONY_UPDATER_KEY_PASSWORD = "replace-with-strong-password"
-npm --prefix ../src-ui exec -- tauri signer generate -- --ci -w "$env:USERPROFILE\.tauri\harmony-updater.key" -p "$env:HARMONY_UPDATER_KEY_PASSWORD"
+npm --prefix apps/desktop/src-ui exec -- tauri signer generate -- --ci -w "$env:USERPROFILE\.tauri\harmony-updater.key" -p "$env:HARMONY_UPDATER_KEY_PASSWORD"
 ```
 
 Then copy the generated public key contents into:
@@ -142,9 +147,8 @@ From repo root:
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Raw "$env:USERPROFILE\.tauri\harmony-updater.key").Trim()
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "$env:HARMONY_UPDATER_KEY_PASSWORD"
-cd apps/desktop/src-ui
-npm ci
-npm run tauri:build
+npm ci --prefix apps/desktop/src-ui
+npm --prefix apps/desktop/src-ui run tauri:build:windows
 ```
 
 This generates (under `apps/desktop/src-tauri/target/release/bundle/nsis/`):
@@ -157,8 +161,7 @@ This generates (under `apps/desktop/src-tauri/target/release/bundle/nsis/`):
 From repo root:
 
 ```powershell
-cd apps/desktop/src-tauri
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-github-update.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/src-tauri/scripts/publish-github-update.ps1 `
   -ReleaseTag "v0.1.0" `
   -Repo "MasonKomo/Harmony" `
   -ReleaseNotes "Harmony 0.1.0"
@@ -176,8 +179,7 @@ This script:
 Use the release wrapper script to validate key/pubkey, build, and publish in one run:
 
 ```powershell
-cd apps/desktop/src-tauri
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-day.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/src-tauri/scripts/release-day.ps1 `
   -Version "0.1.0" `
   -ReleaseNotes "Harmony 0.1.0" `
   -KeyPassword "$env:HARMONY_UPDATER_KEY_PASSWORD"
@@ -192,8 +194,7 @@ Useful flags:
 Optional local smoke check (no GitHub upload):
 
 ```powershell
-cd apps/desktop/src-tauri
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-github-update.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/src-tauri/scripts/publish-github-update.ps1 `
   -ReleaseTag "v0.1.0" `
   -DryRun
 ```
@@ -201,8 +202,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-github-updat
 If `latest.json` was previously published with BOM and app update checks fail with a decode error, regenerate and re-upload the asset:
 
 ```powershell
-cd apps/desktop/src-tauri
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-github-update.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/src-tauri/scripts/publish-github-update.ps1 `
   -ReleaseTag "v0.1.0" `
   -Repo "MasonKomo/Harmony" `
   -ReleaseNotes "Harmony 0.1.0"
@@ -219,30 +219,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-github-updat
 
 ## Build macOS Installer (`.dmg`)
 
-Current default `apps/desktop/src-tauri/tauri.conf.json` is Windows-oriented (`nsis` target + Windows OpenSSL runtime copy step).  
-For macOS packaging, create a macOS-specific Tauri config once, then build with it.
+`apps/desktop/src-tauri/tauri.conf.json` is platform-neutral.  
+For platform-specific packaging overrides, scripts use:
 
-### 1) Create `apps/desktop/src-tauri/tauri.macos.conf.json`
+- `apps/desktop/src-tauri/tauri.windows.conf.json` (Windows installer flow)
+- `apps/desktop/src-tauri/tauri.macos.conf.json` (macOS installer flow)
 
-Start by copying `tauri.conf.json`, then make these required changes:
-
-- `build.beforeBuildCommand`:
-  - from: `npm --prefix src-ui run build && powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/scripts/prepare-openssl-runtime.ps1`
-  - to: `npm --prefix src-ui run build`
-- `bundle.targets`:
-  - from: `"nsis"`
-  - to: `["app", "dmg"]`
-- remove Windows-only bundle resources:
-  - delete `bundle.resources`
-
-### 2) Build with the macOS config
+### Build with the macOS config
 
 From repo root:
 
 ```bash
-cd apps/desktop/src-tauri
-npm --prefix ../src-ui ci
-npm --prefix ../src-ui exec -- tauri build --config tauri.macos.conf.json
+npm ci --prefix apps/desktop/src-ui
+npm --prefix apps/desktop/src-ui run tauri:build:macos
 ```
 
 Outputs:

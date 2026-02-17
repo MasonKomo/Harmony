@@ -7,7 +7,7 @@
     "frontendDist": "../src-ui/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm --prefix src-ui run dev",
-    "beforeBuildCommand": "npm --prefix src-ui run build && powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/scripts/prepare-openssl-runtime.ps1"
+    "beforeBuildCommand": "npm --prefix src-ui run build"
   },
   "app": {
     "windows": [
@@ -26,13 +26,7 @@
     }
   },
   "bundle": {
-    "active": true,
-    "targets": "nsis",
-    "createUpdaterArtifacts": true,
-    "resources": {
-      "resources/openssl-windows/libssl-3-x64.dll": "libssl-3-x64.dll",
-      "resources/openssl-windows/libcrypto-3-x64.dll": "libcrypto-3-x64.dll"
-    }
+    "active": true
   },
   "plugins": {
     "updater": {

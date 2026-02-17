@@ -1,0 +1,11 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm --prefix src-ui run build"
+  },
+  "bundle": {
+    "targets": [
+      "app",
+      "dmg"
+    ]
+  }
+}

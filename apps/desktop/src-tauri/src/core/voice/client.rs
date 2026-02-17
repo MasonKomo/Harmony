@@ -49,7 +49,11 @@ const OPUS_PACKET_LOSS_PCT: i32 = 8;
 const MEDIA_TICK_MS: u64 = 20;
 const UDP_PING_INTERVAL_SECS: u64 = 5;
 const VOICE_HANGOVER_FRAMES: u32 = 4;
+#[cfg(target_os = "macos")]
+const VAD_THRESHOLD: f32 = 0.010;
+#[cfg(not(target_os = "macos"))]
 const VAD_THRESHOLD: f32 = 0.015;
+const VAD_OFF_THRESHOLD: f32 = VAD_THRESHOLD * 0.7;
 const UDP_DECRYPT_FAILURE_THRESHOLD: u32 = 12;
 const UDP_DEGRADED_WINDOW_MS: u64 = 10_000;
 const RX_JITTER_TARGET_FRAMES: usize = 3;
@@ -85,7 +89,9 @@ impl VoiceService {
         self.disconnect().await;
 
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let handle = tauri::async_runtime::spawn(run_voice_worker(app, config, shared, command_rx));
+        let handle = tauri::async_runtime::spawn_blocking(move || {
+            tauri::async_runtime::block_on(run_voice_worker(app, config, shared, command_rx));
+        });
 
         self.command_tx = Some(command_tx);
         self.worker = Some(handle);
@@ -237,7 +243,11 @@ impl ProtocolRoster {
         self.channels.remove(&channel_id).is_some()
     }
 
-    fn apply_user_state(&mut self, msg: &msgs::UserState) -> (bool, Option<SelfEvent>) {
+    fn apply_user_state(
+        &mut self,
+        msg: &msgs::UserState,
+        current_self: &SelfEvent,
+    ) -> (bool, Option<SelfEvent>) {
         if !msg.has_session() {
             return (false, None);
         }
@@ -285,8 +295,8 @@ impl ProtocolRoster {
             self_event = Some(SelfEvent {
                 muted: user.muted,
                 deafened: user.deafened,
-                ptt_enabled: false,
-                transmitting: false,
+                ptt_enabled: current_self.ptt_enabled,
+                transmitting: current_self.transmitting,
             });
         }
 
@@ -479,6 +489,7 @@ struct MediaRuntime {
     udp_consecutive_decrypt_failures: u32,
     last_udp_audio_rx_at: Option<Instant>,
     udp_degraded_until: Option<Instant>,
+    last_should_transmit: Option<bool>,
 }
 
 impl MediaRuntime {
@@ -541,6 +552,7 @@ impl MediaRuntime {
             udp_consecutive_decrypt_failures: 0,
             last_udp_audio_rx_at: None,
             udp_degraded_until: None,
+            last_should_transmit: None,
         })
     }
 
@@ -740,6 +752,7 @@ impl MediaRuntime {
                 .collect::<Vec<f32>>();
             let level = rms_level(&frame);
             let should_tx = self.should_transmit(level);
+            self.log_tx_gate_transition(level, should_tx);
 
             if should_tx {
                 self.silence_frames = 0;
@@ -782,6 +795,7 @@ impl MediaRuntime {
             return Ok(());
         }
         self.transmitting = transmitting;
+        log::debug!("voice transmit state changed: transmitting={transmitting}");
 
         let next = {
             let mut self_state = shared.self_state.write().await;
@@ -850,7 +864,8 @@ impl MediaRuntime {
     }
 
     fn mark_udp_decrypt_failure(&mut self) {
-        self.udp_consecutive_decrypt_failures = self.udp_consecutive_decrypt_failures.saturating_add(1);
+        self.udp_consecutive_decrypt_failures =
+            self.udp_consecutive_decrypt_failures.saturating_add(1);
         if self.udp_consecutive_decrypt_failures < UDP_DECRYPT_FAILURE_THRESHOLD {
             return;
         }
@@ -875,9 +890,9 @@ impl MediaRuntime {
             .map(|last| now.duration_since(last).as_millis());
 
         match since_last_audio_ms {
-            Some(ms) => log::warn!(
-                "degrading udp voice path ({reason}); last udp audio rx was {ms}ms ago"
-            ),
+            Some(ms) => {
+                log::warn!("degrading udp voice path ({reason}); last udp audio rx was {ms}ms ago")
+            }
             None => log::warn!("degrading udp voice path ({reason}); no udp audio received yet"),
         }
     }
@@ -909,6 +924,30 @@ impl MediaRuntime {
         }
 
         self.vad.is_speaking(level)
+    }
+
+    fn log_tx_gate_transition(&mut self, level: f32, should_tx: bool) {
+        if self.last_should_transmit == Some(should_tx) {
+            return;
+        }
+        self.last_should_transmit = Some(should_tx);
+
+        let gate = if self.muted {
+            "muted"
+        } else if self.deafened {
+            "deafened"
+        } else if self.ptt_enabled {
+            "ptt_vad"
+        } else {
+            "vad"
+        };
+
+        log::debug!(
+            "voice tx gate changed: open={should_tx} level={level:.5} on_threshold={VAD_THRESHOLD:.5} off_threshold={VAD_OFF_THRESHOLD:.5} muted={} deafened={} ptt_enabled={} gate={gate}",
+            self.muted,
+            self.deafened,
+            self.ptt_enabled,
+        );
     }
 
     fn encode_frame(&mut self, frame: &[f32]) -> Result<Vec<u8>, String> {
@@ -1446,15 +1485,15 @@ mod tests {
 
     #[test]
     fn next_connecting_state_only_uses_connecting_for_initial_attempt() {
-        assert_eq!(
-            next_connecting_state(0, false),
-            ConnectionState::Connecting
-        );
+        assert_eq!(next_connecting_state(0, false), ConnectionState::Connecting);
         assert_eq!(
             next_connecting_state(1, false),
             ConnectionState::Reconnecting
         );
-        assert_eq!(next_connecting_state(0, true), ConnectionState::Reconnecting);
+        assert_eq!(
+            next_connecting_state(0, true),
+            ConnectionState::Reconnecting
+        );
     }
 
     #[test]
@@ -1464,6 +1503,37 @@ mod tests {
         assert_eq!(reconnect_delay(5), Duration::from_secs(32));
         assert_eq!(reconnect_delay(6), Duration::from_secs(32));
         assert_eq!(reconnect_delay(100), Duration::from_secs(32));
+    }
+
+    #[test]
+    fn apply_user_state_preserves_ptt_and_transmitting_for_self_events() {
+        let mut roster = ProtocolRoster::new("Game Night".to_string());
+        roster.set_self_session(42);
+
+        let mut msg = msgs::UserState::new();
+        msg.set_session(42);
+        msg.set_name("mason".to_string());
+        msg.set_self_mute(true);
+
+        let current_self = SelfEvent {
+            muted: false,
+            deafened: false,
+            ptt_enabled: true,
+            transmitting: true,
+        };
+
+        let (_changed, maybe_self) = roster.apply_user_state(&msg, &current_self);
+        let self_event = maybe_self.expect("self event should be present");
+
+        assert_eq!(
+            self_event,
+            SelfEvent {
+                muted: true,
+                deafened: false,
+                ptt_enabled: true,
+                transmitting: true,
+            }
+        );
     }
 }
 
@@ -1585,14 +1655,13 @@ async fn handle_control_packet(
             roster_changed = roster.remove_channel(msg.get_channel_id()) || roster_changed;
         }
         ControlPacket::UserState(msg) => {
-            let (changed, maybe_self) = roster.apply_user_state(&msg);
+            let current_self = { shared.self_state.read().await.clone() };
+            let (changed, maybe_self) = roster.apply_user_state(&msg, &current_self);
             roster_changed = changed || roster_changed;
 
-            if let Some(mut self_event) = maybe_self {
+            if let Some(self_event) = maybe_self {
                 {
                     let mut self_state = shared.self_state.write().await;
-                    self_event.ptt_enabled = self_state.ptt_enabled;
-                    self_event.transmitting = self_state.transmitting;
                     *self_state = self_event.clone();
                 }
                 let _ = events::emit_self(app, &self_event);

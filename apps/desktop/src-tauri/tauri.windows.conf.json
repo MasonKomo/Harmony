@@ -1,0 +1,13 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm --prefix src-ui run build && powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/scripts/prepare-openssl-runtime.ps1"
+  },
+  "bundle": {
+    "targets": "nsis",
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "resources/openssl-windows/libssl-3-x64.dll": "libssl-3-x64.dll",
+      "resources/openssl-windows/libcrypto-3-x64.dll": "libcrypto-3-x64.dll"
+    }
+  }
+}
