@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "harmony-desktop"
-version = "0.12.8"
+version = "0.12.9"
 dependencies = [
  "audioadapter-buffers",
  "bytes",

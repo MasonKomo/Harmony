@@ -76,7 +76,7 @@ const RX_GAP_PLC_TRIGGER_FRAMES: u64 = 2;
 const RX_MIX_HEADROOM_GAIN: f32 = 0.90;
 const RX_LIMITER_DRIVE: f32 = 1.35;
 const INBOUND_STREAM_IDLE_TIMEOUT_MS: u64 = 8_000;
-const FORCE_GAP_CONCEAL_IDLE_MS: u64 = MEDIA_TICK_MS * 2;
+const FORCE_GAP_CONCEAL_IDLE_MS: u64 = MEDIA_TICK_MS * 5;
 const HARMONY_BADGES_COMMENT_PREFIX: &str = "harmony_badges:v1:";
 const MAX_BADGE_CODES_PER_USER: usize = 5;
 const MAX_BADGE_CODE_LEN: usize = 32;
@@ -1349,14 +1349,24 @@ impl MediaRuntime {
         let stream = self.inbound_streams.entry(session_id).or_default();
         if let Some(expected) = stream.expected_seq {
             if seq_num < expected {
-                log::debug!(
-                    "dropping late voice frame for session {session_id}: seq={seq_num} expected={expected}"
-                );
-                self.quality_snapshot.rx_late_frames_dropped = self
-                    .quality_snapshot
-                    .rx_late_frames_dropped
-                    .saturating_add(1);
-                return;
+                // If the jitter buffer is starving (nothing buffered, nothing decoded),
+                // reset expected_seq to accept this frame. Playing slightly-old audio
+                // is always better than a permanent silence death spiral.
+                if stream.buffered.is_empty() && stream.decoded_samples.is_empty() {
+                    log::debug!(
+                        "resetting starving stream {session_id}: expected_seq {expected} -> {seq_num}"
+                    );
+                    stream.expected_seq = Some(seq_num);
+                } else {
+                    log::debug!(
+                        "dropping late voice frame for session {session_id}: seq={seq_num} expected={expected}"
+                    );
+                    self.quality_snapshot.rx_late_frames_dropped = self
+                        .quality_snapshot
+                        .rx_late_frames_dropped
+                        .saturating_add(1);
+                    return;
+                }
             }
         }
 
