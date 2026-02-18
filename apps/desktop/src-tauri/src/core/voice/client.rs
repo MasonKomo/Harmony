@@ -45,7 +45,8 @@ const OPUS_SAMPLE_RATE: u32 = 48_000;
 const OPUS_FRAME_SAMPLES: usize = 960;
 const OPUS_MAX_PACKET_SIZE: usize = 1024;
 const OPUS_MAX_DECODED_SAMPLES: usize = 5760;
-const OPUS_SEQ_STEP: u64 = OPUS_FRAME_SAMPLES as u64;
+// Mumble sequence numbers are frame-sequence counters, not PCM sample offsets.
+const OPUS_SEQ_STEP: u64 = 1;
 const DEFAULT_OPUS_BITRATE_BPS: i32 = 48_000;
 const OPUS_BITRATE_MIN_BPS: i32 = 32_000;
 const OPUS_BITRATE_MAX_BPS: i32 = 72_000;
