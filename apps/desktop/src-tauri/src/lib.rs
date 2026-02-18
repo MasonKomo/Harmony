@@ -42,6 +42,7 @@ pub fn run() {
             core::set_output_device,
             core::set_server_endpoint,
             core::refresh_devices,
+            core::get_audio_quality_metrics,
             core::send_message,
             core::list_soundboard_clips,
             core::import_soundboard_clip,

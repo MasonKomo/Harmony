@@ -8,6 +8,13 @@
   "output_device": null,
   "output_volume": 80,
   "auto_mute_on_deafen": true,
+  "voice_quality": {
+    "opus_bitrate_bps": 48000,
+    "packet_loss_perc": 10,
+    "jitter_target_frames": 4,
+    "jitter_max_frames": 10,
+    "inband_fec": true
+  },
   "server": {
     "host": "ec2-3-133-108-176.us-east-2.compute.amazonaws.com",
     "port": 64738,

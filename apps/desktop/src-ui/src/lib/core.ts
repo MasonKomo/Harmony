@@ -4,6 +4,7 @@ import { relaunch } from '@tauri-apps/plugin-process'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 
 import type {
+  AudioQualityMetrics,
   BootstrapState,
   ConnectionEvent,
   DevicesEvent,
@@ -68,6 +69,10 @@ export async function setServerEndpoint(host: string, port: number): Promise<voi
 
 export async function refreshDevices(): Promise<DevicesEvent> {
   return invoke<DevicesEvent>('refresh_devices')
+}
+
+export async function getAudioQualityMetrics(): Promise<AudioQualityMetrics> {
+  return invoke<AudioQualityMetrics>('get_audio_quality_metrics')
 }
 
 export async function sendMessage(message: string): Promise<void> {

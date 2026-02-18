@@ -3,9 +3,11 @@ pub mod audio_out;
 pub mod client;
 pub mod codec;
 pub mod hotkeys;
+pub mod quality;
+pub mod resampler;
 pub mod vad;
 
-pub use client::{VoiceService, VoiceSharedState};
+pub use client::{AudioQualityMetrics, VoiceService, VoiceSharedState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioDevice {

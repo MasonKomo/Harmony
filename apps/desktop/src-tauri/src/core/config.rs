@@ -49,7 +49,35 @@ pub struct AppConfig {
     #[serde(default = "default_auto_mute_on_deafen")]
     pub auto_mute_on_deafen: bool,
     #[serde(default)]
+    pub voice_quality: VoiceQualityConfig,
+    #[serde(default)]
     pub server: ServerConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceQualityConfig {
+    #[serde(default = "default_opus_bitrate_bps")]
+    pub opus_bitrate_bps: i32,
+    #[serde(default = "default_packet_loss_perc")]
+    pub packet_loss_perc: i32,
+    #[serde(default = "default_jitter_target_frames")]
+    pub jitter_target_frames: usize,
+    #[serde(default = "default_jitter_max_frames")]
+    pub jitter_max_frames: usize,
+    #[serde(default = "default_inband_fec")]
+    pub inband_fec: bool,
+}
+
+impl Default for VoiceQualityConfig {
+    fn default() -> Self {
+        Self {
+            opus_bitrate_bps: default_opus_bitrate_bps(),
+            packet_loss_perc: default_packet_loss_perc(),
+            jitter_target_frames: default_jitter_target_frames(),
+            jitter_max_frames: default_jitter_max_frames(),
+            inband_fec: default_inband_fec(),
+        }
+    }
 }
 
 impl Default for ServerConfig {
@@ -76,6 +104,7 @@ impl Default for AppConfig {
             output_device: None,
             output_volume: default_output_volume(),
             auto_mute_on_deafen: default_auto_mute_on_deafen(),
+            voice_quality: VoiceQualityConfig::default(),
             server: ServerConfig::default(),
         }
     }
@@ -229,6 +258,26 @@ const fn default_output_volume() -> u8 {
 }
 
 const fn default_auto_mute_on_deafen() -> bool {
+    true
+}
+
+const fn default_opus_bitrate_bps() -> i32 {
+    48_000
+}
+
+const fn default_packet_loss_perc() -> i32 {
+    10
+}
+
+const fn default_jitter_target_frames() -> usize {
+    4
+}
+
+const fn default_jitter_max_frames() -> usize {
+    10
+}
+
+const fn default_inband_fec() -> bool {
     true
 }
 

@@ -19,7 +19,7 @@ allowping=true
 sendversion=true
 
 # Bandwidth settings (good for voice chat)
-bandwidth=${MURMUR_BANDWIDTH:-72000}
+bandwidth=${MURMUR_BANDWIDTH:-128000}
 
 # User limits
 users=${MURMUR_MAX_USERS:-30}

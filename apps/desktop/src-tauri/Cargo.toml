@@ -1,6 +1,6 @@
 [package]
 name = "harmony-desktop"
-version = "0.12.3"
+version = "0.12.4"
 description = "Harmony desktop voice chat client"
 authors = ["Harmony"]
 license = "MIT"
@@ -38,6 +38,9 @@ tauri-plugin-log = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 symphonia = { version = "0.5.5", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm"] }
+rubato = "1.0.1"
+crossbeam-queue = "0.3.12"
+audioadapter-buffers = "2.0.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
