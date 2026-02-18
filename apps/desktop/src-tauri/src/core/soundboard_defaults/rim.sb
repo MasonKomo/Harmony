@@ -1,0 +1,6 @@
+wave=triangle
+freq_hz=520
+duration_ms=230
+gain=0.74
+attack_ms=3
+release_ms=70

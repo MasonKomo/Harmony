@@ -1,0 +1,6 @@
+wave=square
+freq_hz=380
+duration_ms=200
+gain=0.68
+attack_ms=4
+release_ms=80

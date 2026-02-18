@@ -10,6 +10,7 @@ import type {
   MessageEvent,
   RosterEvent,
   SelfEvent,
+  SoundboardClip,
   SpeakingEvent,
   UpdateInfo,
 } from '@/lib/types'
@@ -29,8 +30,8 @@ export async function bootstrap(): Promise<BootstrapState> {
   return invoke<BootstrapState>('bootstrap')
 }
 
-export async function connect(nickname: string): Promise<void> {
-  return invoke<void>('connect', { args: { nickname } })
+export async function connect(nickname: string, badgeCodes: string[]): Promise<void> {
+  return invoke<void>('connect', { args: { nickname, badge_codes: badgeCodes } })
 }
 
 export async function disconnect(): Promise<void> {
@@ -61,12 +62,38 @@ export async function setOutputDevice(deviceId: string): Promise<void> {
   return invoke<void>('set_output_device', { args: { device_id: deviceId } })
 }
 
+export async function setServerEndpoint(host: string, port: number): Promise<void> {
+  return invoke<void>('set_server_endpoint', { args: { host, port } })
+}
+
 export async function refreshDevices(): Promise<DevicesEvent> {
   return invoke<DevicesEvent>('refresh_devices')
 }
 
 export async function sendMessage(message: string): Promise<void> {
   return invoke<void>('send_message', { args: { message } })
+}
+
+export async function listSoundboardClips(): Promise<SoundboardClip[]> {
+  return invoke<SoundboardClip[]>('list_soundboard_clips')
+}
+
+export async function importSoundboardClip(
+  label: string,
+  fileName: string,
+  bytes: Uint8Array
+): Promise<SoundboardClip> {
+  return invoke<SoundboardClip>('import_soundboard_clip', {
+    args: { label, file_name: fileName, bytes: Array.from(bytes) },
+  })
+}
+
+export async function deleteSoundboardClip(clipId: string): Promise<void> {
+  return invoke<void>('delete_soundboard_clip', { args: { clip_id: clipId } })
+}
+
+export async function playSoundboardClip(clipId: string): Promise<void> {
+  return invoke<void>('play_soundboard_clip', { args: { clip_id: clipId } })
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {

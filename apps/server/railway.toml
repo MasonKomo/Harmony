@@ -1,0 +1,11 @@
+# Railway deployment configuration for Harmony Voice Server
+# This can be converted to a Railway template
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# No HTTP healthcheck - Mumble uses a custom protocol on TCP
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ChangeEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
   Circle,
@@ -7,9 +7,11 @@ import {
   LogOut,
   Mic,
   MicOff,
+  Plus,
   RefreshCw,
   Send,
   Settings2,
+  Trash2,
   Volume2,
   VolumeOff,
   Waves,
@@ -20,7 +22,11 @@ import {
   checkForUpdate,
   connect,
   disconnect,
+  deleteSoundboardClip,
+  importSoundboardClip,
   installCachedUpdate,
+  listSoundboardClips,
+  playSoundboardClip,
   refreshDevices,
   sendMessage,
   setDeafen,
@@ -29,6 +35,7 @@ import {
   setOutputDevice,
   setPtt,
   setPttHotkey,
+  setServerEndpoint,
   subscribeCoreEvents,
 } from '@/lib/core'
 import { getVersion } from '@tauri-apps/api/app'
@@ -40,10 +47,12 @@ import type {
   MessageEvent,
   RosterEvent,
   SelfEvent,
+  SoundboardClip,
   UpdateInfo,
 } from '@/lib/types'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge, type BadgeProps } from '@/components/ui/badge'
+import { BadgeIcons } from '@/components/badge-icons'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -57,6 +66,11 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -66,6 +80,12 @@ import {
 } from '@/components/ui/sheet'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
+import {
+  BADGE_MANIFEST,
+  MAX_BADGES_PER_USER,
+  normalizeBadgeCodes,
+  resolveBadgeByCode,
+} from '@/lib/badges'
 import { cn } from '@/lib/utils'
 
 const INITIAL_CONNECTION: ConnectionEvent = { state: 'disconnected' }
@@ -92,8 +112,19 @@ const METER_FFT_SIZE = 512
 const METER_GAIN = 3.8
 const METER_SMOOTHING = 0.24
 const CHAT_HISTORY_LIMIT = 300
+const SOUNDBOARD_UPLOAD_ACCEPT = '.wav,.mp3,.ogg,audio/wav,audio/mpeg,audio/ogg'
+const HARMONY_DEFAULT_SERVER_ENDPOINT = {
+  host: 'ec2-3-133-108-176.us-east-2.compute.amazonaws.com',
+  port: 64738,
+}
+const RAILWAY_SERVER_PROFILE = {
+  name: 'Harmony',
+  host: 'shinkansen.proxy.rlwy.net',
+  port: 34004,
+}
 
 type ChatDeliveryState = 'pending' | 'confirmed'
+type ServerPreset = 'harmony-default' | 'railway' | 'custom'
 
 type ChatMessage = MessageEvent & {
   local_id: string
@@ -105,6 +136,7 @@ type ChatMessage = MessageEvent & {
 interface MessageGroup {
   actorName: string
   actorSession?: string
+  actorBadgeCodes: string[]
   messages: ChatMessage[]
   firstTimestamp: number
 }
@@ -115,6 +147,8 @@ const normalizeChatText = (value: string) => value.replace(/\s+/g, ' ').trim()
 const normalizeActorName = (value: string) => value.trim().toLowerCase()
 const normalizeChannelId = (channelId?: string) => channelId ?? ''
 const normalizeOutgoingChannelId = (channelId: string) => (channelId === '0' ? undefined : channelId)
+const normalizeServerHost = (host: string) => host.trim().toLowerCase()
+const formatClipDuration = (durationMs: number) => `${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 0 : 1)}s`
 
 const trimMessageHistory = (messages: ChatMessage[]) =>
   messages.length > CHAT_HISTORY_LIMIT
@@ -187,10 +221,15 @@ function App() {
   const [devices, setDevices] = useState<DevicesEvent>(INITIAL_DEVICES)
   const [selfState, setSelfState] = useState<SelfEvent>(INITIAL_SELF_STATE)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [soundboardClips, setSoundboardClips] = useState<SoundboardClip[]>([])
+  const [soundboardOpen, setSoundboardOpen] = useState(false)
+  const [soundboardBusy, setSoundboardBusy] = useState(false)
+  const [soundboardPlayingId, setSoundboardPlayingId] = useState<string | null>(null)
   const [chatInput, setChatInput] = useState('')
   const [micLevel, setMicLevel] = useState(0)
   const [micMeterStatus, setMicMeterStatus] = useState<MicMeterStatus>('idle')
   const [nicknameInput, setNicknameInput] = useState('')
+  const [selectedBadgeCodes, setSelectedBadgeCodes] = useState<string[]>([])
   const [hotkeyInput, setHotkeyInput] = useState('AltLeft')
   const [outputVolume, setOutputVolume] = useState([80])
   const [loading, setLoading] = useState(true)
@@ -201,6 +240,7 @@ function App() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
   const [updateNotice, setUpdateNotice] = useState<string | null>(null)
+  const [serverPresetBusy, setServerPresetBusy] = useState(false)
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const mountedRef = useRef(false)
   const chatBottomRef = useRef<HTMLDivElement | null>(null)
@@ -211,6 +251,8 @@ function App() {
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const meterAnimationRef = useRef<number | null>(null)
   const localMessageCounterRef = useRef(0)
+  const loadedBadgeProfileRef = useRef<string | null>(null)
+  const soundboardFileInputRef = useRef<HTMLInputElement | null>(null)
 
   const stopMicMeter = useCallback(() => {
     if (meterAnimationRef.current !== null) {
@@ -276,6 +318,11 @@ function App() {
     }
   }, [updateInfo])
 
+  const refreshSoundboard = useCallback(async () => {
+    const clips = await listSoundboardClips()
+    setSoundboardClips(clips)
+  }, [])
+
   useEffect(() => {
     let stopListeners: (() => void) | null = null
     let mounted = true
@@ -294,8 +341,22 @@ function App() {
         setDevices(snapshot.devices)
         setSelfState(snapshot.self_state)
         setNicknameInput(snapshot.config.nickname)
+        setSelectedBadgeCodes(
+          normalizeBadgeCodes(snapshot.config.badge_profiles[snapshot.config.nickname] ?? [])
+        )
+        loadedBadgeProfileRef.current = snapshot.config.nickname
         setHotkeyInput(snapshot.config.ptt_hotkey)
         setOutputVolume([snapshot.config.output_volume])
+        try {
+          const clips = await listSoundboardClips()
+          if (mounted) {
+            setSoundboardClips(clips)
+          }
+        } catch (error) {
+          if (mounted) {
+            setErrorMessage(String(error))
+          }
+        }
       } catch (error) {
         if (mounted) {
           setErrorMessage(String(error))
@@ -386,6 +447,22 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!config) {
+      return
+    }
+    const profileKey = nicknameInput.trim()
+    if (loadedBadgeProfileRef.current === profileKey) {
+      return
+    }
+    loadedBadgeProfileRef.current = profileKey
+    if (!profileKey) {
+      setSelectedBadgeCodes([])
+      return
+    }
+    setSelectedBadgeCodes(normalizeBadgeCodes(config.badge_profiles[profileKey] ?? []))
+  }, [config, nicknameInput])
+
   const connectionLabel = useMemo(() => {
     const labels: Record<ConnectionState, string> = {
       connected: 'Connected',
@@ -416,10 +493,24 @@ function App() {
   const joinedUserCount = roster.users.length
   const showConnectedLayout =
     connection.state === 'connected' || connection.state === 'reconnecting'
+  const selectedBadgeSet = useMemo(() => new Set(selectedBadgeCodes), [selectedBadgeCodes])
+  const rosterBadgesById = useMemo(
+    () => new Map(roster.users.map((user) => [user.id, normalizeBadgeCodes(user.badge_codes)])),
+    [roster.users]
+  )
   const visibleMessages = useMemo(
     () => messages.filter((message) => !message.channel_id || message.channel_id === roster.channel.id),
     [messages, roster.channel.id]
   )
+  const defaultSoundboardClips = useMemo(
+    () => soundboardClips.filter((clip) => clip.source === 'default'),
+    [soundboardClips]
+  )
+  const customSoundboardClips = useMemo(
+    () => soundboardClips.filter((clip) => clip.source === 'custom'),
+    [soundboardClips]
+  )
+  const canUseSoundboard = showConnectedLayout && connection.state !== 'disconnected'
 
   const groupedMessages = useMemo(() => {
     const groups: MessageGroup[] = []
@@ -435,13 +526,16 @@ function App() {
         groups.push({
           actorName: msg.actor_name,
           actorSession: msg.actor_session,
+          actorBadgeCodes: msg.actor_session
+            ? normalizeBadgeCodes(rosterBadgesById.get(msg.actor_session) ?? [])
+            : [],
           messages: [msg],
           firstTimestamp: msg.timestamp_ms,
         })
       }
     }
     return groups
-  }, [visibleMessages])
+  }, [rosterBadgesById, visibleMessages])
 
   const messageTimeFormatter = useMemo(
     () =>
@@ -456,6 +550,24 @@ function App() {
     micMeterStatus === 'denied'
       ? 'Mic permission denied for level meter.'
       : 'Mic access required for level meter.'
+  const selectedServerPreset = useMemo<ServerPreset>(() => {
+    if (!config) {
+      return 'custom'
+    }
+
+    const host = normalizeServerHost(config.server.host)
+    if (host === normalizeServerHost(RAILWAY_SERVER_PROFILE.host) && config.server.port === RAILWAY_SERVER_PROFILE.port) {
+      return 'railway'
+    }
+    if (
+      host === normalizeServerHost(HARMONY_DEFAULT_SERVER_ENDPOINT.host) &&
+      config.server.port === HARMONY_DEFAULT_SERVER_ENDPOINT.port
+    ) {
+      return 'harmony-default'
+    }
+
+    return 'custom'
+  }, [config])
   const meterBars = useMemo(
     () =>
       Array.from({ length: METER_BAR_COUNT }, (_, index) => {
@@ -471,6 +583,13 @@ function App() {
       }),
     [renderedMicLevel]
   )
+
+  useEffect(() => {
+    if (!canUseSoundboard) {
+      setSoundboardOpen(false)
+      setSoundboardPlayingId(null)
+    }
+  }, [canUseSoundboard])
 
   useEffect(() => {
     mountedRef.current = true
@@ -603,10 +722,24 @@ function App() {
       return
     }
 
+    const nextNickname = nicknameInput.trim()
+    const nextBadgeCodes = normalizeBadgeCodes(selectedBadgeCodes)
     setActionBusy(true)
     setErrorMessage(null)
     try {
-      await connect(nicknameInput.trim())
+      await connect(nextNickname, nextBadgeCodes)
+      setConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              nickname: nextNickname,
+              badge_profiles: {
+                ...prev.badge_profiles,
+                [nextNickname]: nextBadgeCodes,
+              },
+            }
+          : prev
+      )
     } catch (error) {
       setErrorMessage(String(error))
     } finally {
@@ -691,6 +824,54 @@ function App() {
     }
   }
 
+  const handleServerPresetChange = async (presetValue: string) => {
+    if (!config) {
+      return
+    }
+
+    let nextHost: string
+    let nextPort: number
+
+    if (presetValue === 'railway') {
+      nextHost = RAILWAY_SERVER_PROFILE.host
+      nextPort = RAILWAY_SERVER_PROFILE.port
+    } else if (presetValue === 'harmony-default') {
+      nextHost = HARMONY_DEFAULT_SERVER_ENDPOINT.host
+      nextPort = HARMONY_DEFAULT_SERVER_ENDPOINT.port
+    } else {
+      return
+    }
+
+    if (
+      normalizeServerHost(nextHost) === normalizeServerHost(config.server.host) &&
+      nextPort === config.server.port
+    ) {
+      return
+    }
+
+    setServerPresetBusy(true)
+    setErrorMessage(null)
+    try {
+      await setServerEndpoint(nextHost, nextPort)
+      setConfig((prev) =>
+        prev
+          ? {
+              ...prev,
+              server: {
+                ...prev.server,
+                host: nextHost,
+                port: nextPort,
+              },
+            }
+          : prev
+      )
+    } catch (error) {
+      setErrorMessage(String(error))
+    } finally {
+      setServerPresetBusy(false)
+    }
+  }
+
   const handleRefreshDevices = async () => {
     setErrorMessage(null)
     try {
@@ -699,6 +880,67 @@ function App() {
     } catch (error) {
       setErrorMessage(String(error))
     }
+  }
+
+  const handleSoundboardPlay = async (clipId: string) => {
+    if (!canUseSoundboard) {
+      return
+    }
+    setErrorMessage(null)
+    setSoundboardPlayingId(clipId)
+    try {
+      await playSoundboardClip(clipId)
+    } catch (error) {
+      setErrorMessage(String(error))
+    } finally {
+      setSoundboardPlayingId((current) => (current === clipId ? null : current))
+    }
+  }
+
+  const handleSoundboardDelete = async (clipId: string) => {
+    setSoundboardBusy(true)
+    setErrorMessage(null)
+    try {
+      await deleteSoundboardClip(clipId)
+      await refreshSoundboard()
+    } catch (error) {
+      setErrorMessage(String(error))
+    } finally {
+      setSoundboardBusy(false)
+    }
+  }
+
+  const handleSoundboardUploadPick = () => {
+    soundboardFileInputRef.current?.click()
+  }
+
+  const handleSoundboardUploadChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) {
+      return
+    }
+
+    setSoundboardBusy(true)
+    setErrorMessage(null)
+    try {
+      const buffer = await file.arrayBuffer()
+      const bytes = new Uint8Array(buffer)
+      await importSoundboardClip('', file.name, bytes)
+      await refreshSoundboard()
+    } catch (error) {
+      setErrorMessage(String(error))
+    } finally {
+      setSoundboardBusy(false)
+    }
+  }
+
+  const handleBadgeAdd = (badgeCode: string) => {
+    setSelectedBadgeCodes((prev) => normalizeBadgeCodes([...prev, badgeCode]))
+  }
+
+  const handleBadgeRemove = (badgeCode: string) => {
+    setSelectedBadgeCodes((prev) => prev.filter((code) => code !== badgeCode))
   }
 
   const handleSendChat = async (event: FormEvent<HTMLFormElement>) => {
@@ -862,11 +1104,31 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="rounded-md border bg-secondary/40 p-3 text-xs text-muted-foreground">
-                    <p>
+                  <div className="rounded-md border bg-secondary/40 p-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="server-profile">Server profile</Label>
+                      <Select
+                        value={selectedServerPreset}
+                        onValueChange={(value) => void handleServerPresetChange(value)}
+                        disabled={serverPresetBusy}
+                      >
+                        <SelectTrigger id="server-profile">
+                          <SelectValue placeholder="Select server profile" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="harmony-default">Harmony default</SelectItem>
+                          <SelectItem value="railway">Railway ({RAILWAY_SERVER_PROFILE.name})</SelectItem>
+                          <SelectItem value="custom">Custom (current)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <p className="mt-3 text-xs text-muted-foreground">
                       Server: {config.server.host}:{config.server.port}
                     </p>
-                    <p className="mt-1">Channel target: {config.server.default_channel}</p>
+                    <p className="text-xs text-muted-foreground">Channel target: {config.server.default_channel}</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Reconnect after switching profiles to apply immediately.
+                    </p>
                   </div>
 
                   <div className="rounded-md border bg-secondary/40 p-3">
@@ -966,7 +1228,10 @@ function App() {
                             ) : null}
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium">{user.name}</p>
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <p className="truncate text-sm font-medium">{user.name}</p>
+                              <BadgeIcons badgeCodes={user.badge_codes} size="sm" className="shrink-0" />
+                            </div>
                             <div className="flex items-center gap-1">
                               {user.muted ? (
                                 <MicOff className="size-3 text-destructive" />
@@ -1024,6 +1289,110 @@ function App() {
 
                 {/* Control buttons */}
                 <div className="flex gap-1">
+                  <input
+                    ref={soundboardFileInputRef}
+                    type="file"
+                    accept={SOUNDBOARD_UPLOAD_ACCEPT}
+                    onChange={(event) => void handleSoundboardUploadChange(event)}
+                    className="hidden"
+                  />
+                  <Popover open={soundboardOpen} onOpenChange={setSoundboardOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="flex-1"
+                        disabled={!canUseSoundboard || soundboardBusy}
+                      >
+                        <Waves className="size-4" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-80 p-2">
+                      <div className="mb-2 flex items-start justify-between gap-2 px-1">
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Soundboard
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Upload custom clips (local only). Everyone hears played clips.
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2"
+                          disabled={soundboardBusy}
+                          onClick={handleSoundboardUploadPick}
+                        >
+                          <Plus className="size-3.5" />
+                          Add
+                        </Button>
+                      </div>
+
+                      <div className="space-y-1">
+                        <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Default
+                        </p>
+                        {defaultSoundboardClips.map((clip) => (
+                          <Button
+                            key={clip.id}
+                            type="button"
+                            variant={soundboardPlayingId === clip.id ? 'secondary' : 'ghost'}
+                            size="sm"
+                            className="h-8 w-full justify-between px-2"
+                            onClick={() => void handleSoundboardPlay(clip.id)}
+                            disabled={soundboardBusy || !canUseSoundboard}
+                          >
+                            <span className="truncate">{clip.label}</span>
+                            <span className="text-[10px] text-muted-foreground">
+                              {formatClipDuration(clip.duration_ms)}
+                            </span>
+                          </Button>
+                        ))}
+                      </div>
+
+                      <div className="mt-2 space-y-1 border-t border-border/60 pt-2">
+                        <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Custom
+                        </p>
+                        {customSoundboardClips.length === 0 ? (
+                          <p className="px-1 py-1 text-[11px] text-muted-foreground">
+                            No custom clips yet.
+                          </p>
+                        ) : (
+                          customSoundboardClips.map((clip) => (
+                            <div key={clip.id} className="flex items-center gap-1">
+                              <Button
+                                type="button"
+                                variant={soundboardPlayingId === clip.id ? 'secondary' : 'ghost'}
+                                size="sm"
+                                className="h-8 flex-1 justify-between px-2"
+                                onClick={() => void handleSoundboardPlay(clip.id)}
+                                disabled={soundboardBusy || !canUseSoundboard}
+                              >
+                                <span className="truncate">{clip.label}</span>
+                                <span className="text-[10px] text-muted-foreground">
+                                  {formatClipDuration(clip.duration_ms)}
+                                </span>
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 px-2 text-muted-foreground hover:text-destructive"
+                                disabled={soundboardBusy}
+                                onClick={() => void handleSoundboardDelete(clip.id)}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
                   <Button
                     type="button"
                     variant={selfState.muted ? 'destructive' : 'ghost'}
@@ -1106,7 +1475,10 @@ function App() {
                         </Avatar>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline gap-2">
-                            <span className="font-medium">{group.actorName}</span>
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <span className="truncate font-medium">{group.actorName}</span>
+                              <BadgeIcons badgeCodes={group.actorBadgeCodes} size="sm" />
+                            </div>
                             <span className="text-xs text-muted-foreground">
                               {messageTimeFormatter.format(new Date(group.firstTimestamp))}
                             </span>
@@ -1206,6 +1578,64 @@ function App() {
                       onChange={(event) => setNicknameInput(event.target.value)}
                       maxLength={32}
                     />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="badge-picker">Badges</Label>
+                      <span className="text-[11px] text-muted-foreground">
+                        {selectedBadgeCodes.length}/{MAX_BADGES_PER_USER}
+                      </span>
+                    </div>
+                    <Select
+                      onValueChange={(value) => {
+                        handleBadgeAdd(value)
+                      }}
+                    >
+                      <SelectTrigger id="badge-picker" disabled={selectedBadgeCodes.length >= MAX_BADGES_PER_USER}>
+                        <SelectValue placeholder="Add a badge" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {BADGE_MANIFEST.map((badge) => (
+                          <SelectItem
+                            key={badge.code}
+                            value={badge.code}
+                            disabled={
+                              selectedBadgeSet.has(badge.code) ||
+                              selectedBadgeCodes.length >= MAX_BADGES_PER_USER
+                            }
+                          >
+                            <span className="inline-flex items-center gap-2">
+                              <img
+                                src={badge.src}
+                                alt={badge.label}
+                                className="size-4 rounded-sm border border-border/50 object-cover"
+                              />
+                              <span>{badge.label}</span>
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {selectedBadgeCodes.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedBadgeCodes.map((badgeCode) => {
+                          const badge = resolveBadgeByCode(badgeCode)
+                          return (
+                            <button
+                              key={badgeCode}
+                              type="button"
+                              onClick={() => handleBadgeRemove(badgeCode)}
+                              className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-secondary/35 px-2 py-1 text-xs transition-colors hover:bg-secondary/60"
+                            >
+                              <BadgeIcons badgeCodes={[badgeCode]} size="sm" />
+                              <span>{badge?.label ?? badgeCode}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">No badges selected.</p>
+                    )}
                   </div>
                   {isSuperuserRoute ? (
                     <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">

@@ -1,0 +1,49 @@
+# Murmur configuration for Harmony
+# Environment variables are substituted at runtime
+
+[server]
+# Database location (persisted via Railway volume)
+database=/data/murmur.sqlite
+
+# Server identity
+serverpassword=${MURMUR_PASSWORD:-}
+welcometext=${MURMUR_WELCOME_TEXT:-Welcome to Harmony Voice Chat!}
+registerName=${MURMUR_SERVER_NAME:-Harmony}
+
+# Network settings
+port=64738
+host=0.0.0.0
+
+# Allow anonymous users (no certificate required for easy joining)
+allowping=true
+sendversion=true
+
+# Bandwidth settings (good for voice chat)
+bandwidth=${MURMUR_BANDWIDTH:-72000}
+
+# User limits
+users=${MURMUR_MAX_USERS:-30}
+
+# Text message length limit
+textmessagelength=5000
+imagemessagelength=131072
+
+# Logging
+logfile=${MURMUR_LOG_FILE:-/data/murmur.log}
+logdays=-1
+
+# SSL/TLS (Railway provides TLS termination, but we configure anyway)
+sslCert=/data/cert.pem
+sslKey=/data/key.pem
+
+# Channel settings
+defaultchannel=0
+rememberchannel=true
+
+# Auto-ban settings (protect against abuse)
+autobanAttempts=10
+autobanTimeframe=120
+autobanTime=300
+
+# Opus codec (required for Harmony client)
+opusthreshold=0

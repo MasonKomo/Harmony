@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -31,6 +32,8 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfig {
     pub nickname: String,
+    #[serde(default)]
+    pub badge_profiles: HashMap<String, Vec<String>>,
     #[serde(default = "default_remember_me")]
     pub remember_me: bool,
     #[serde(default)]
@@ -65,6 +68,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             nickname: String::new(),
+            badge_profiles: HashMap::new(),
             remember_me: default_remember_me(),
             ptt_enabled: false,
             ptt_hotkey: default_ptt_hotkey(),

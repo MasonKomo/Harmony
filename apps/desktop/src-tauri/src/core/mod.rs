@@ -1,7 +1,9 @@
 pub mod config;
 pub mod events;
+pub mod soundboard;
 pub mod voice;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,6 +16,7 @@ use events::{
     emit_connection, emit_devices, emit_roster, emit_self, ConnectionEvent, ConnectionState,
     DevicesEvent, SelfEvent,
 };
+use soundboard::{SoundboardClip, SoundboardStore};
 use voice::hotkeys::Hotkey;
 use voice::{list_input_devices, list_output_devices, VoiceService, VoiceSharedState};
 
@@ -35,6 +38,7 @@ pub struct AppCore {
     pub devices: Arc<RwLock<DevicesEvent>>,
     pub self_state: Arc<RwLock<SelfEvent>>,
     pub voice: Mutex<VoiceService>,
+    pub soundboard: Mutex<SoundboardStore>,
 }
 
 impl AppCore {
@@ -65,6 +69,7 @@ impl AppCore {
             devices: Arc::new(RwLock::new(devices)),
             self_state: Arc::new(RwLock::new(self_state)),
             voice: Mutex::new(VoiceService::new()),
+            soundboard: Mutex::new(SoundboardStore::load()?),
         })
     }
 
@@ -140,6 +145,8 @@ fn read_devices_event() -> DevicesEvent {
 #[derive(Debug, Deserialize)]
 pub struct ConnectArgs {
     nickname: String,
+    #[serde(default)]
+    badge_codes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,8 +180,31 @@ pub struct SetOutputDeviceArgs {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct SetServerEndpointArgs {
+    host: String,
+    port: u16,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SendMessageArgs {
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportSoundboardClipArgs {
+    label: String,
+    file_name: String,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteSoundboardClipArgs {
+    clip_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PlaySoundboardClipArgs {
+    clip_id: String,
 }
 
 #[tauri::command]
@@ -192,10 +222,12 @@ pub async fn connect(
     if nickname.is_empty() {
         return Err("nickname is required".to_string());
     }
+    let badge_codes = normalize_badge_codes(args.badge_codes);
 
     {
         let mut config = state.config.write().await;
-        config.nickname = nickname;
+        config.nickname = nickname.clone();
+        config.badge_profiles.insert(nickname, badge_codes);
     }
     state.persist_config().await?;
 
@@ -207,6 +239,35 @@ pub async fn connect(
     }
     state.emit_initial_events(&app).await?;
     Ok(())
+}
+
+const MAX_BADGE_CODES_PER_USER: usize = 5;
+const MAX_BADGE_CODE_LEN: usize = 32;
+
+fn normalize_badge_codes(raw_codes: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+
+    for raw in raw_codes {
+        let code = raw.trim().to_ascii_lowercase();
+        if code.is_empty() || code.len() > MAX_BADGE_CODE_LEN {
+            continue;
+        }
+        if !code.bytes().all(|value| {
+            value.is_ascii_lowercase() || value.is_ascii_digit() || value == b'-' || value == b'_'
+        }) {
+            continue;
+        }
+        if !seen.insert(code.clone()) {
+            continue;
+        }
+        normalized.push(code);
+        if normalized.len() >= MAX_BADGE_CODES_PER_USER {
+            break;
+        }
+    }
+
+    normalized
 }
 
 #[tauri::command]
@@ -352,6 +413,29 @@ pub async fn set_output_device(
 }
 
 #[tauri::command]
+pub async fn set_server_endpoint(
+    _app: AppHandle,
+    state: State<'_, AppCore>,
+    args: SetServerEndpointArgs,
+) -> Result<(), String> {
+    let host = args.host.trim().to_string();
+    if host.is_empty() {
+        return Err("server host cannot be empty".to_string());
+    }
+    if args.port == 0 {
+        return Err("server port must be greater than 0".to_string());
+    }
+
+    {
+        let mut config = state.config.write().await;
+        config.server.host = host;
+        config.server.port = args.port;
+    }
+    state.persist_config().await?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn refresh_devices(
     app: AppHandle,
     state: State<'_, AppCore>,
@@ -372,4 +456,43 @@ pub async fn send_message(
 
     let voice = state.voice.lock().await;
     voice.send_message(message)
+}
+
+#[tauri::command]
+pub async fn list_soundboard_clips(state: State<'_, AppCore>) -> Result<Vec<SoundboardClip>, String> {
+    let soundboard = state.soundboard.lock().await;
+    Ok(soundboard.list_clips())
+}
+
+#[tauri::command]
+pub async fn import_soundboard_clip(
+    state: State<'_, AppCore>,
+    args: ImportSoundboardClipArgs,
+) -> Result<SoundboardClip, String> {
+    let mut soundboard = state.soundboard.lock().await;
+    soundboard.import_custom_clip(&args.label, &args.file_name, &args.bytes)
+}
+
+#[tauri::command]
+pub async fn delete_soundboard_clip(
+    state: State<'_, AppCore>,
+    args: DeleteSoundboardClipArgs,
+) -> Result<(), String> {
+    let mut soundboard = state.soundboard.lock().await;
+    soundboard.delete_custom_clip(&args.clip_id)
+}
+
+#[tauri::command]
+pub async fn play_soundboard_clip(
+    state: State<'_, AppCore>,
+    args: PlaySoundboardClipArgs,
+) -> Result<(), String> {
+    let samples_48k = {
+        let soundboard = state.soundboard.lock().await;
+        soundboard
+            .samples_for_clip(&args.clip_id)
+            .ok_or_else(|| "clip not found".to_string())?
+    };
+    let voice = state.voice.lock().await;
+    voice.queue_soundboard_samples(samples_48k)
 }

@@ -43,6 +43,7 @@ pub struct ChannelInfo {
 pub struct RosterUser {
     pub id: String,
     pub name: String,
+    pub badge_codes: Vec<String>,
     pub muted: bool,
     pub deafened: bool,
     pub speaking: bool,

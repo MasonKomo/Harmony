@@ -40,8 +40,13 @@ pub fn run() {
             core::set_ptt_hotkey,
             core::set_input_device,
             core::set_output_device,
+            core::set_server_endpoint,
             core::refresh_devices,
-            core::send_message
+            core::send_message,
+            core::list_soundboard_clips,
+            core::import_soundboard_clip,
+            core::delete_soundboard_clip,
+            core::play_soundboard_clip
         ])
         .run(tauri::generate_context!());
 

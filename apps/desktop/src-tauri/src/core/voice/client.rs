@@ -49,6 +49,8 @@ const OPUS_PACKET_LOSS_PCT: i32 = 8;
 const MEDIA_TICK_MS: u64 = 20;
 const UDP_PING_INTERVAL_SECS: u64 = 5;
 const VOICE_HANGOVER_FRAMES: u32 = 4;
+const SOUNDBOARD_QUEUE_LIMIT_SAMPLES: usize = OPUS_SAMPLE_RATE as usize * 20;
+const SOUNDBOARD_MIX_GAIN: f32 = 0.55;
 #[cfg(target_os = "macos")]
 const VAD_THRESHOLD: f32 = 0.010;
 #[cfg(not(target_os = "macos"))]
@@ -59,6 +61,13 @@ const UDP_DEGRADED_WINDOW_MS: u64 = 10_000;
 const RX_JITTER_TARGET_FRAMES: usize = 3;
 const RX_JITTER_MAX_FRAMES: usize = 8;
 const RX_GAP_PLC_TRIGGER_FRAMES: u64 = 2;
+const HARMONY_BADGES_COMMENT_PREFIX: &str = "harmony_badges:v1:";
+const MAX_BADGE_CODES_PER_USER: usize = 5;
+const MAX_BADGE_CODE_LEN: usize = 32;
+const MUMBLE_MIN_CHANNEL_LISTENER_MAJOR: u32 = 1;
+const MUMBLE_MIN_CHANNEL_LISTENER_MINOR: u32 = 4;
+const MUMBLE_MIN_CHANNEL_LISTENER_PATCH: u32 = 0;
+const HARMONY_CLIENT_RELEASE_NAME: &str = "Harmony Desktop";
 
 #[derive(Clone)]
 pub struct VoiceSharedState {
@@ -135,6 +144,10 @@ impl VoiceService {
         self.send_command_result(VoiceCommand::SendMessage(message))
     }
 
+    pub fn queue_soundboard_samples(&self, samples_48k: Vec<f32>) -> Result<(), String> {
+        self.send_command_result(VoiceCommand::QueueSoundboardSamples(samples_48k))
+    }
+
     fn send_command(&self, command: VoiceCommand) {
         if let Some(tx) = &self.command_tx {
             let _ = tx.send(command);
@@ -159,6 +172,7 @@ enum VoiceCommand {
     SetInputDevice(String),
     SetOutputDevice(String),
     SendMessage(String),
+    QueueSoundboardSamples(Vec<f32>),
 }
 
 struct LiveConnection {
@@ -170,6 +184,7 @@ struct LiveConnection {
 struct ProtocolUser {
     session: u32,
     name: String,
+    badge_codes: Vec<String>,
     channel_id: u32,
     muted: bool,
     deafened: bool,
@@ -182,6 +197,7 @@ impl ProtocolUser {
         Self {
             session,
             name: format!("User {}", session),
+            badge_codes: Vec::new(),
             channel_id: 0,
             muted: false,
             deafened: false,
@@ -263,6 +279,13 @@ impl ProtocolRoster {
             let next_name = msg.get_name().to_string();
             if user.name != next_name {
                 user.name = next_name;
+                changed = true;
+            }
+        }
+        if msg.has_comment() {
+            let next_badges = parse_badge_comment(msg.get_comment()).unwrap_or_default();
+            if user.badge_codes != next_badges {
+                user.badge_codes = next_badges;
                 changed = true;
             }
         }
@@ -374,6 +397,7 @@ impl ProtocolRoster {
             .map(|user| events::RosterUser {
                 id: user.session.to_string(),
                 name: user.name.clone(),
+                badge_codes: user.badge_codes.clone(),
                 muted: user.muted,
                 deafened: user.deafened,
                 speaking: user.speaking,
@@ -475,6 +499,7 @@ struct MediaRuntime {
     input_converter: Option<MonoRateConverter>,
     output_playback: Option<OutputPlayback>,
     capture_48k: Vec<f32>,
+    soundboard_queue_48k: Vec<f32>,
     encoder: OpusEncoder,
     decoders: HashMap<u32, OpusDecoder>,
     inbound_streams: HashMap<u32, InboundVoiceStream>,
@@ -538,6 +563,7 @@ impl MediaRuntime {
             input_converter,
             output_playback,
             capture_48k: Vec::with_capacity(OPUS_FRAME_SAMPLES * 8),
+            soundboard_queue_48k: Vec::with_capacity(OPUS_FRAME_SAMPLES * 8),
             encoder,
             decoders: HashMap::new(),
             inbound_streams: HashMap::new(),
@@ -613,6 +639,22 @@ impl MediaRuntime {
 
     fn set_ptt_hotkey(&mut self, hotkey: String) {
         self.ptt_hotkey = hotkey;
+    }
+
+    fn enqueue_soundboard_samples(&mut self, mut samples_48k: Vec<f32>) {
+        if samples_48k.is_empty() {
+            return;
+        }
+        if self.soundboard_queue_48k.len() >= SOUNDBOARD_QUEUE_LIMIT_SAMPLES {
+            self.soundboard_queue_48k.clear();
+        }
+        let available = SOUNDBOARD_QUEUE_LIMIT_SAMPLES
+            .saturating_sub(self.soundboard_queue_48k.len());
+        if samples_48k.len() > available {
+            let drop_count = samples_48k.len() - available;
+            samples_48k.drain(..drop_count);
+        }
+        self.soundboard_queue_48k.extend(samples_48k);
     }
 
     fn set_input_device(&mut self, device_id: String) {
@@ -745,13 +787,24 @@ impl MediaRuntime {
         }
 
         let mut sent_voice_frame = false;
-        while self.capture_48k.len() >= OPUS_FRAME_SAMPLES {
-            let frame = self
-                .capture_48k
-                .drain(..OPUS_FRAME_SAMPLES)
-                .collect::<Vec<f32>>();
+        while self.capture_48k.len() >= OPUS_FRAME_SAMPLES || !self.soundboard_queue_48k.is_empty()
+        {
+            let mut frame = if self.capture_48k.len() >= OPUS_FRAME_SAMPLES {
+                self.capture_48k
+                    .drain(..OPUS_FRAME_SAMPLES)
+                    .collect::<Vec<f32>>()
+            } else {
+                vec![0.0_f32; OPUS_FRAME_SAMPLES]
+            };
+            let soundboard_take = self.soundboard_queue_48k.len().min(OPUS_FRAME_SAMPLES);
+            if soundboard_take > 0 {
+                for (idx, sample) in self.soundboard_queue_48k.drain(..soundboard_take).enumerate() {
+                    frame[idx] = (frame[idx] + sample * SOUNDBOARD_MIX_GAIN).clamp(-1.0, 1.0);
+                }
+            }
             let level = rms_level(&frame);
-            let should_tx = self.should_transmit(level);
+            let soundboard_gate_open = soundboard_take > 0 && !self.deafened;
+            let should_tx = should_send_voice_frame(soundboard_gate_open, self.should_transmit(level));
             self.log_tx_gate_transition(level, should_tx);
 
             if should_tx {
@@ -1355,6 +1408,19 @@ async fn connect_mumble(config: &AppConfig) -> Result<LiveConnection, String> {
     let framed = ClientControlCodec::new().framed(tls);
     let (mut sink, stream) = framed.split();
 
+    let mut version = msgs::Version::new();
+    version.set_version(pack_mumble_version(
+        MUMBLE_MIN_CHANNEL_LISTENER_MAJOR,
+        MUMBLE_MIN_CHANNEL_LISTENER_MINOR,
+        MUMBLE_MIN_CHANNEL_LISTENER_PATCH,
+    ));
+    version.set_release(HARMONY_CLIENT_RELEASE_NAME.to_string());
+    version.set_os(std::env::consts::OS.to_string());
+    version.set_os_version(std::env::consts::ARCH.to_string());
+    sink.send(ControlPacket::<Serverbound>::from(version))
+        .await
+        .map_err(|err| format!("failed to send version packet: {err}"))?;
+
     let auth_profile = derive_auth_profile(config);
     let mut authenticate = msgs::Authenticate::new();
     authenticate.set_username(auth_profile.auth_username);
@@ -1380,6 +1446,10 @@ fn resolve_server_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
         .map_err(|err| format!("failed to resolve server address {host}:{port}: {err}"))?
         .next()
         .ok_or_else(|| format!("no socket address resolved for {host}:{port}"))
+}
+
+fn pack_mumble_version(major: u32, minor: u32, patch: u32) -> u32 {
+    ((major & 0xFFFF) << 16) | ((minor & 0xFF) << 8) | (patch & 0xFF)
 }
 
 fn create_udp_socket(server_addr: SocketAddr) -> Result<std::net::UdpSocket, String> {
@@ -1419,6 +1489,60 @@ fn derive_auth_profile(config: &AppConfig) -> AuthProfile {
             .clone()
             .or_else(|| Some(DEFAULT_USER_PASSWORD.to_string())),
     }
+}
+
+fn badge_codes_for_nickname(config: &AppConfig) -> Vec<String> {
+    config
+        .badge_profiles
+        .get(&config.nickname)
+        .cloned()
+        .map(normalize_badge_codes)
+        .unwrap_or_default()
+}
+
+fn normalize_badge_codes(raw_codes: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+
+    for raw in raw_codes {
+        let code = raw.trim().to_ascii_lowercase();
+        if code.is_empty() || code.len() > MAX_BADGE_CODE_LEN {
+            continue;
+        }
+        if !code.bytes().all(|value| {
+            value.is_ascii_lowercase() || value.is_ascii_digit() || value == b'-' || value == b'_'
+        }) {
+            continue;
+        }
+        if normalized.contains(&code) {
+            continue;
+        }
+        normalized.push(code);
+        if normalized.len() >= MAX_BADGE_CODES_PER_USER {
+            break;
+        }
+    }
+
+    normalized
+}
+
+fn encode_badge_comment(badge_codes: &[String]) -> String {
+    let normalized = normalize_badge_codes(badge_codes.to_vec());
+    format!("{}{}", HARMONY_BADGES_COMMENT_PREFIX, normalized.join(","))
+}
+
+fn parse_badge_comment(comment: &str) -> Option<Vec<String>> {
+    let payload = comment.strip_prefix(HARMONY_BADGES_COMMENT_PREFIX)?;
+    let codes = payload
+        .split(',')
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    Some(normalize_badge_codes(codes))
+}
+
+fn should_send_voice_frame(has_soundboard_audio: bool, mic_gate_open: bool) -> bool {
+    has_soundboard_audio || mic_gate_open
 }
 
 #[cfg(test)]
@@ -1535,6 +1659,56 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn badge_comment_round_trip_encodes_and_decodes() {
+        let input = vec!["rainbow-core".to_string(), "party-parrot".to_string()];
+        let encoded = encode_badge_comment(&input);
+        let decoded = parse_badge_comment(&encoded).expect("should parse encoded payload");
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn parse_badge_comment_ignores_non_harmony_payload() {
+        assert_eq!(parse_badge_comment("hello world"), None);
+    }
+
+    #[test]
+    fn parse_badge_comment_normalizes_dedupes_and_caps() {
+        let parsed = parse_badge_comment(
+            "harmony_badges:v1:RAINBOW-CORE,party-parrot,rainbow-core,invalid!,a,b,c,d,e",
+        )
+        .expect("payload should parse");
+        assert_eq!(
+            parsed,
+            vec![
+                "rainbow-core".to_string(),
+                "party-parrot".to_string(),
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn should_send_voice_frame_allows_soundboard_when_mic_gate_is_closed() {
+        assert!(should_send_voice_frame(true, false));
+        assert!(should_send_voice_frame(true, true));
+    }
+
+    #[test]
+    fn should_send_voice_frame_respects_mic_gate_without_soundboard() {
+        assert!(should_send_voice_frame(false, true));
+        assert!(!should_send_voice_frame(false, false));
+    }
+
+    #[test]
+    fn pack_mumble_version_encodes_major_minor_patch() {
+        assert_eq!(pack_mumble_version(1, 4, 0), 0x010400);
+        assert_eq!(pack_mumble_version(1, 5, 9), 0x010509);
+        assert_eq!(pack_mumble_version(2, 255, 255), 0x02FFFF);
+    }
 }
 
 async fn handle_live_command(
@@ -1578,6 +1752,10 @@ async fn handle_live_command(
             Ok(())
         }
         VoiceCommand::SendMessage(message) => send_text_message(sink, roster, message).await,
+        VoiceCommand::QueueSoundboardSamples(samples_48k) => {
+            media.enqueue_soundboard_samples(samples_48k);
+            Ok(())
+        }
     }
 }
 
@@ -1623,6 +1801,7 @@ async fn handle_control_packet(
         }
         ControlPacket::ServerSync(msg) => {
             roster.set_self_session(msg.get_session());
+            send_self_badge_comment(sink, &badge_codes_for_nickname(config)).await?;
             roster_changed = true;
             let _ = media.send_udp_ping();
         }
@@ -1762,6 +1941,17 @@ async fn send_self_state_update(
     sink.send(ControlPacket::<Serverbound>::from(update))
         .await
         .map_err(|err| format!("failed to send user state update: {err}"))
+}
+
+async fn send_self_badge_comment(
+    sink: &mut ControlSink,
+    badge_codes: &[String],
+) -> Result<(), String> {
+    let mut update = msgs::UserState::new();
+    update.set_comment(encode_badge_comment(badge_codes));
+    sink.send(ControlPacket::<Serverbound>::from(update))
+        .await
+        .map_err(|err| format!("failed to send badge metadata: {err}"))
 }
 
 async fn send_ping(

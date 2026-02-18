@@ -10,6 +10,7 @@ export interface ServerConfig {
 
 export interface AppConfig {
   nickname: string
+  badge_profiles: Record<string, string[]>
   remember_me: boolean
   ptt_enabled: boolean
   ptt_hotkey: string
@@ -33,6 +34,7 @@ export interface ChannelInfo {
 export interface RosterUser {
   id: string
   name: string
+  badge_codes: string[]
   muted: boolean
   deafened: boolean
   speaking: boolean
@@ -72,6 +74,15 @@ export interface MessageEvent {
   channel_id?: string
   message: string
   timestamp_ms: number
+}
+
+export type SoundboardClipSource = 'default' | 'custom'
+
+export interface SoundboardClip {
+  id: string
+  label: string
+  source: SoundboardClipSource
+  duration_ms: number
 }
 
 export interface UpdateInfo {

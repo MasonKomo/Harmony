@@ -1,0 +1,6 @@
+wave=sine
+freq_hz=940
+duration_ms=260
+gain=0.78
+attack_ms=8
+release_ms=90

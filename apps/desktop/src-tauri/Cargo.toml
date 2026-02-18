@@ -37,6 +37,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
+symphonia = { version = "0.5.5", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
