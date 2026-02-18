@@ -23,7 +23,8 @@ const MANIFEST_FILE: &str = "manifest.json";
 const OUTPUT_SAMPLE_RATE: u32 = 48_000;
 const MAX_IMPORT_BYTES: usize = 6 * 1024 * 1024;
 const MAX_CLIP_DURATION_MS: u32 = 8_000;
-const MAX_CLIP_SAMPLES: usize = ((OUTPUT_SAMPLE_RATE as u64 * MAX_CLIP_DURATION_MS as u64) / 1000) as usize;
+const MAX_CLIP_SAMPLES: usize =
+    ((OUTPUT_SAMPLE_RATE as u64 * MAX_CLIP_DURATION_MS as u64) / 1000) as usize;
 const MAX_LABEL_CHARS: usize = 36;
 
 static CUSTOM_CLIP_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -128,16 +129,14 @@ impl SoundboardStore {
             .values()
             .map(|entry| entry.clip.clone())
             .collect::<Vec<_>>();
-        clips.sort_by(|left, right| {
-            match (&left.source, &right.source) {
-                (SoundboardClipSource::Default, SoundboardClipSource::Custom) => {
-                    std::cmp::Ordering::Less
-                }
-                (SoundboardClipSource::Custom, SoundboardClipSource::Default) => {
-                    std::cmp::Ordering::Greater
-                }
-                _ => left.label.to_lowercase().cmp(&right.label.to_lowercase()),
+        clips.sort_by(|left, right| match (&left.source, &right.source) {
+            (SoundboardClipSource::Default, SoundboardClipSource::Custom) => {
+                std::cmp::Ordering::Less
             }
+            (SoundboardClipSource::Custom, SoundboardClipSource::Default) => {
+                std::cmp::Ordering::Greater
+            }
+            _ => left.label.to_lowercase().cmp(&right.label.to_lowercase()),
         });
         clips
     }
@@ -207,7 +206,10 @@ impl SoundboardStore {
                     Ok(()) => {}
                     Err(err) if err.kind() == ErrorKind::NotFound => {}
                     Err(err) => {
-                        log::warn!("failed to remove custom clip file {}: {err}", path.display());
+                        log::warn!(
+                            "failed to remove custom clip file {}: {err}",
+                            path.display()
+                        );
                     }
                 }
             }
@@ -217,7 +219,9 @@ impl SoundboardStore {
     }
 
     pub fn samples_for_clip(&self, clip_id: &str) -> Option<Vec<f32>> {
-        self.clips.get(clip_id).map(|entry| entry.samples_48k.clone())
+        self.clips
+            .get(clip_id)
+            .map(|entry| entry.samples_48k.clone())
     }
 
     fn load_default_clips(&mut self) -> Result<(), String> {
@@ -331,7 +335,8 @@ impl SoundboardStore {
                 })
             })
             .collect::<Vec<_>>();
-        custom_clips.sort_by(|left, right| left.label.to_lowercase().cmp(&right.label.to_lowercase()));
+        custom_clips
+            .sort_by(|left, right| left.label.to_lowercase().cmp(&right.label.to_lowercase()));
         self.write_manifest(&SoundboardManifest { custom_clips })
     }
 
@@ -377,7 +382,10 @@ fn normalize_label(label: &str, file_name: &str) -> String {
 }
 
 fn normalize_extension(file_name: &str) -> Option<&'static str> {
-    let ext = Path::new(file_name).extension()?.to_str()?.to_ascii_lowercase();
+    let ext = Path::new(file_name)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase();
     match ext.as_str() {
         "mp3" => Some("mp3"),
         "wav" => Some("wav"),
@@ -400,7 +408,10 @@ fn ensure_clip_length(sample_count: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn decode_audio_to_48k_mono(bytes: &[u8], extension_hint: Option<&str>) -> Result<Vec<f32>, String> {
+fn decode_audio_to_48k_mono(
+    bytes: &[u8],
+    extension_hint: Option<&str>,
+) -> Result<Vec<f32>, String> {
     let mut hint = Hint::new();
     if let Some(ext) = extension_hint {
         hint.with_extension(ext);
@@ -409,7 +420,12 @@ fn decode_audio_to_48k_mono(bytes: &[u8], extension_hint: Option<&str>) -> Resul
     let source = std::io::Cursor::new(bytes.to_vec());
     let mss = MediaSourceStream::new(Box::new(source), Default::default());
     let probe = get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|err| format!("unsupported or invalid audio format: {err}"))?;
 
     let mut format = probe.format;
@@ -508,7 +524,9 @@ fn normalize_audio(input: &[f32]) -> Vec<f32> {
     if input.is_empty() {
         return Vec::new();
     }
-    let peak = input.iter().fold(0.0_f32, |max, sample| max.max(sample.abs()));
+    let peak = input
+        .iter()
+        .fold(0.0_f32, |max, sample| max.max(sample.abs()));
     let gain = if peak > 0.92 { 0.92 / peak } else { 1.0 };
     input
         .iter()

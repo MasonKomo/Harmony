@@ -85,7 +85,9 @@ pub fn list_input_devices() -> Vec<AudioDevice> {
 pub fn start_input_capture(selected_device_id: Option<&str>) -> Result<InputCapture, String> {
     let host = cpal::default_host();
     let device = resolve_input_device(&host, selected_device_id)?;
-    let device_name = device.name().unwrap_or_else(|_| "Unknown Input".to_string());
+    let device_name = device
+        .name()
+        .unwrap_or_else(|_| "Unknown Input".to_string());
     let supported = device
         .default_input_config()
         .map_err(|err| format!("failed to query default input config: {err}"))?;
@@ -101,30 +103,70 @@ pub fn start_input_capture(selected_device_id: Option<&str>) -> Result<InputCapt
     };
 
     let stream = match sample_format {
-        SampleFormat::I8 => {
-            build_input_stream::<i8>(&device, &stream_config, channels, sender, Arc::clone(&stats), err_fn)?
-        }
-        SampleFormat::I16 => {
-            build_input_stream::<i16>(&device, &stream_config, channels, sender, Arc::clone(&stats), err_fn)?
-        }
-        SampleFormat::I32 => {
-            build_input_stream::<i32>(&device, &stream_config, channels, sender, Arc::clone(&stats), err_fn)?
-        }
-        SampleFormat::U8 => {
-            build_input_stream::<u8>(&device, &stream_config, channels, sender, Arc::clone(&stats), err_fn)?
-        }
-        SampleFormat::U16 => {
-            build_input_stream::<u16>(&device, &stream_config, channels, sender, Arc::clone(&stats), err_fn)?
-        }
-        SampleFormat::U32 => {
-            build_input_stream::<u32>(&device, &stream_config, channels, sender, Arc::clone(&stats), err_fn)?
-        }
-        SampleFormat::F32 => {
-            build_input_stream::<f32>(&device, &stream_config, channels, sender, Arc::clone(&stats), err_fn)?
-        }
-        SampleFormat::F64 => {
-            build_input_stream::<f64>(&device, &stream_config, channels, sender, Arc::clone(&stats), err_fn)?
-        }
+        SampleFormat::I8 => build_input_stream::<i8>(
+            &device,
+            &stream_config,
+            channels,
+            sender,
+            Arc::clone(&stats),
+            err_fn,
+        )?,
+        SampleFormat::I16 => build_input_stream::<i16>(
+            &device,
+            &stream_config,
+            channels,
+            sender,
+            Arc::clone(&stats),
+            err_fn,
+        )?,
+        SampleFormat::I32 => build_input_stream::<i32>(
+            &device,
+            &stream_config,
+            channels,
+            sender,
+            Arc::clone(&stats),
+            err_fn,
+        )?,
+        SampleFormat::U8 => build_input_stream::<u8>(
+            &device,
+            &stream_config,
+            channels,
+            sender,
+            Arc::clone(&stats),
+            err_fn,
+        )?,
+        SampleFormat::U16 => build_input_stream::<u16>(
+            &device,
+            &stream_config,
+            channels,
+            sender,
+            Arc::clone(&stats),
+            err_fn,
+        )?,
+        SampleFormat::U32 => build_input_stream::<u32>(
+            &device,
+            &stream_config,
+            channels,
+            sender,
+            Arc::clone(&stats),
+            err_fn,
+        )?,
+        SampleFormat::F32 => build_input_stream::<f32>(
+            &device,
+            &stream_config,
+            channels,
+            sender,
+            Arc::clone(&stats),
+            err_fn,
+        )?,
+        SampleFormat::F64 => build_input_stream::<f64>(
+            &device,
+            &stream_config,
+            channels,
+            sender,
+            Arc::clone(&stats),
+            err_fn,
+        )?,
         other => {
             return Err(format!("unsupported input sample format: {other:?}"));
         }

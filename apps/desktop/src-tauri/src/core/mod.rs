@@ -18,7 +18,9 @@ use events::{
 };
 use soundboard::{SoundboardClip, SoundboardStore};
 use voice::hotkeys::Hotkey;
-use voice::{list_input_devices, list_output_devices, AudioQualityMetrics, VoiceService, VoiceSharedState};
+use voice::{
+    list_input_devices, list_output_devices, AudioQualityMetrics, VoiceService, VoiceSharedState,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BootstrapState {
@@ -444,7 +446,9 @@ pub async fn refresh_devices(
 }
 
 #[tauri::command]
-pub async fn get_audio_quality_metrics(state: State<'_, AppCore>) -> Result<AudioQualityMetrics, String> {
+pub async fn get_audio_quality_metrics(
+    state: State<'_, AppCore>,
+) -> Result<AudioQualityMetrics, String> {
     let voice = state.voice.lock().await;
     Ok(voice.audio_quality_metrics())
 }
@@ -465,7 +469,9 @@ pub async fn send_message(
 }
 
 #[tauri::command]
-pub async fn list_soundboard_clips(state: State<'_, AppCore>) -> Result<Vec<SoundboardClip>, String> {
+pub async fn list_soundboard_clips(
+    state: State<'_, AppCore>,
+) -> Result<Vec<SoundboardClip>, String> {
     let soundboard = state.soundboard.lock().await;
     Ok(soundboard.list_clips())
 }
