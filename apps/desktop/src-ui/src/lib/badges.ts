@@ -17,6 +17,46 @@ export const BADGE_MANIFEST: BadgeDefinition[] = [
     label: 'Party Parrot',
     src: '/badges/partyparrot.png',
   },
+  {
+    code: 'league-of-legends',
+    label: 'League Of Legends',
+    src: '/badges/league-of-legends.png',
+  },
+  {
+    code: 'spongebob-mock',
+    label: 'Spongebob Mock',
+    src: '/badges/spongebob-mock.png',
+  },
+  {
+    code: 'kirby-dance',
+    label: 'Kirby Dance',
+    src: '/badges/kirby-dance.png',
+  },
+  {
+    code: 'mario-luigi-dance',
+    label: 'Mario Luigi Dance',
+    src: '/badges/mario-luigi-dance.png',
+  },
+  {
+    code: 'tesla',
+    label: 'Tesla',
+    src: '/badges/tesla.png',
+  },
+  {
+    code: 'dragonball',
+    label: 'Dragon Ball',
+    src: '/badges/dragonball.png',
+  },
+  {
+    code: 'squirtle-cool',
+    label: 'Squirtle Cool',
+    src: '/badges/squirtle-cool.png',
+  },
+  {
+    code: 'jujutsu-kaisen-anime',
+    label: 'Jujutsu Kaisen Anime',
+    src: '/badges/jujutsu-kaisen-anime.png',
+  },
 ]
 
 const BADGE_BY_CODE = new Map(BADGE_MANIFEST.map((badge) => [badge.code, badge]))
