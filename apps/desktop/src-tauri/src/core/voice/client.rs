@@ -76,7 +76,6 @@ const RX_GAP_PLC_TRIGGER_FRAMES: u64 = 2;
 const RX_MIX_HEADROOM_GAIN: f32 = 0.90;
 const RX_LIMITER_DRIVE: f32 = 1.35;
 const INBOUND_STREAM_IDLE_TIMEOUT_MS: u64 = 8_000;
-const FORCE_GAP_CONCEAL_IDLE_MS: u64 = MEDIA_TICK_MS * 5;
 const HARMONY_BADGES_COMMENT_PREFIX: &str = "harmony_badges:v1:";
 const MAX_BADGE_CODES_PER_USER: usize = 5;
 const MAX_BADGE_CODE_LEN: usize = 32;
@@ -608,7 +607,7 @@ struct InboundVoiceStream {
     expected_seq: Option<u64>,
     started: bool,
     buffered: BTreeMap<u64, Vec<u8>>,
-    decoded_samples: VecDeque<f32>,
+    decoded: VecDeque<Vec<f32>>,
     last_packet_at: Option<Instant>,
 }
 
@@ -827,8 +826,8 @@ impl MediaRuntime {
         if self.soundboard_queue_48k.len() >= SOUNDBOARD_QUEUE_LIMIT_SAMPLES {
             self.soundboard_queue_48k.clear();
         }
-        let available =
-            SOUNDBOARD_QUEUE_LIMIT_SAMPLES.saturating_sub(self.soundboard_queue_48k.len());
+        let available = SOUNDBOARD_QUEUE_LIMIT_SAMPLES
+            .saturating_sub(self.soundboard_queue_48k.len());
         if samples_48k.len() > available {
             let drop_count = samples_48k.len() - available;
             samples_48k.drain(..drop_count);
@@ -839,16 +838,14 @@ impl MediaRuntime {
     fn set_input_device(&mut self, device_id: String) {
         match audio_in::start_input_capture(Some(device_id.as_str())) {
             Ok(capture) => {
-                self.input_converter =
-                    match MonoResampler::new(capture.sample_rate(), OPUS_SAMPLE_RATE) {
-                        Ok(converter) => Some(converter),
-                        Err(err) => {
-                            log::warn!(
-                                "failed to initialize input resampler after device switch: {err}"
-                            );
-                            None
-                        }
-                    };
+                self.input_converter = match MonoResampler::new(capture.sample_rate(), OPUS_SAMPLE_RATE)
+                {
+                    Ok(converter) => Some(converter),
+                    Err(err) => {
+                        log::warn!("failed to initialize input resampler after device switch: {err}");
+                        None
+                    }
+                };
                 self.quality_snapshot.input_device_name = Some(capture.device_name().to_string());
                 self.quality_snapshot.input_sample_rate = Some(capture.sample_rate());
                 self.input_capture = Some(capture);
@@ -992,11 +989,7 @@ impl MediaRuntime {
             };
             let soundboard_take = self.soundboard_queue_48k.len().min(OPUS_FRAME_SAMPLES);
             if soundboard_take > 0 {
-                for (idx, sample) in self
-                    .soundboard_queue_48k
-                    .drain(..soundboard_take)
-                    .enumerate()
-                {
+                for (idx, sample) in self.soundboard_queue_48k.drain(..soundboard_take).enumerate() {
                     frame[idx] += sample * SOUNDBOARD_MIX_GAIN;
                 }
             }
@@ -1025,8 +1018,7 @@ impl MediaRuntime {
 
             let level = rms_level(&frame);
             let soundboard_gate_open = soundboard_take > 0 && !self.deafened;
-            let should_tx =
-                should_send_voice_frame(soundboard_gate_open, self.should_transmit(level));
+            let should_tx = should_send_voice_frame(soundboard_gate_open, self.should_transmit(level));
             self.log_tx_gate_transition(level, should_tx);
 
             if should_tx {
@@ -1109,8 +1101,10 @@ impl MediaRuntime {
         if self.can_send_udp_voice() {
             match self.send_udp_packet(packet.clone()) {
                 Ok(()) => {
-                    self.quality_snapshot.tx_packets_sent_udp =
-                        self.quality_snapshot.tx_packets_sent_udp.saturating_add(1);
+                    self.quality_snapshot.tx_packets_sent_udp = self
+                        .quality_snapshot
+                        .tx_packets_sent_udp
+                        .saturating_add(1);
                     return Ok(());
                 }
                 Err(err) => {
@@ -1120,8 +1114,10 @@ impl MediaRuntime {
             }
         }
 
-        self.quality_snapshot.tx_packets_sent_tcp =
-            self.quality_snapshot.tx_packets_sent_tcp.saturating_add(1);
+        self.quality_snapshot.tx_packets_sent_tcp = self
+            .quality_snapshot
+            .tx_packets_sent_tcp
+            .saturating_add(1);
         sink.send(ControlPacket::<Serverbound>::from(packet))
             .await
             .map_err(|err| format!("failed to send tunneled voice packet: {err}"))
@@ -1298,13 +1294,8 @@ impl MediaRuntime {
             let force_gap_conceal = self
                 .inbound_streams
                 .get(&session_id)
-                .map(|stream| {
-                    let Some(last_packet) = stream.last_packet_at else {
-                        return false;
-                    };
-                    stream.buffered.is_empty()
-                        && last_packet.elapsed() >= Duration::from_millis(FORCE_GAP_CONCEAL_IDLE_MS)
-                })
+                .and_then(|stream| stream.last_packet_at)
+                .map(|last_packet| last_packet.elapsed() >= Duration::from_millis(MEDIA_TICK_MS))
                 .unwrap_or(false);
             let actions = {
                 let Some(stream) = self.inbound_streams.get_mut(&session_id) else {
@@ -1318,22 +1309,17 @@ impl MediaRuntime {
             };
             self.decode_actions_for_stream(session_id, actions)?;
         }
+        let queued_samples = self
+            .output_playback
+            .as_ref()
+            .map(|output| output.stats_snapshot().queued_samples)
+            .unwrap_or(0);
+        let target_samples = OPUS_FRAME_SAMPLES.saturating_mul(self.jitter_tuning.target_frames);
         let mut mix_rounds = 1_usize;
-        if let Some(output) = self.output_playback.as_ref() {
-            let queued_samples = output.stats_snapshot().queued_samples;
-            let output_samples_per_mix_round =
-                ((output.sample_rate() as usize * MEDIA_TICK_MS as usize) / 1_000).max(1);
-            let target_rounds = self
-                .jitter_tuning
-                .target_frames
-                .saturating_add(1)
-                .min(self.jitter_tuning.max_frames);
-            let target_samples = output_samples_per_mix_round.saturating_mul(target_rounds);
-            if queued_samples < target_samples {
-                let deficit_samples = target_samples - queued_samples;
-                let deficit_frames = deficit_samples.div_ceil(output_samples_per_mix_round);
-                mix_rounds = deficit_frames.clamp(1, self.jitter_tuning.max_frames);
-            }
+        if queued_samples < target_samples {
+            let deficit_samples = target_samples - queued_samples;
+            let deficit_frames = deficit_samples.div_ceil(OPUS_FRAME_SAMPLES);
+            mix_rounds = deficit_frames.clamp(1, self.jitter_tuning.max_frames);
         }
 
         for _ in 0..mix_rounds {
@@ -1345,28 +1331,23 @@ impl MediaRuntime {
         Ok(())
     }
 
-    fn queue_inbound_voice(&mut self, session_id: u32, seq_num: u64, frame: Vec<u8>) {
+    fn queue_inbound_voice(
+        &mut self,
+        session_id: u32,
+        seq_num: u64,
+        frame: Vec<u8>,
+    ) {
         let stream = self.inbound_streams.entry(session_id).or_default();
         if let Some(expected) = stream.expected_seq {
             if seq_num < expected {
-                // If the jitter buffer is starving (nothing buffered, nothing decoded),
-                // reset expected_seq to accept this frame. Playing slightly-old audio
-                // is always better than a permanent silence death spiral.
-                if stream.buffered.is_empty() && stream.decoded_samples.is_empty() {
-                    log::debug!(
-                        "resetting starving stream {session_id}: expected_seq {expected} -> {seq_num}"
-                    );
-                    stream.expected_seq = Some(seq_num);
-                } else {
-                    log::debug!(
-                        "dropping late voice frame for session {session_id}: seq={seq_num} expected={expected}"
-                    );
-                    self.quality_snapshot.rx_late_frames_dropped = self
-                        .quality_snapshot
-                        .rx_late_frames_dropped
-                        .saturating_add(1);
-                    return;
-                }
+                log::debug!(
+                    "dropping late voice frame for session {session_id}: seq={seq_num} expected={expected}"
+                );
+                self.quality_snapshot.rx_late_frames_dropped = self
+                    .quality_snapshot
+                    .rx_late_frames_dropped
+                    .saturating_add(1);
+                return;
             }
         }
 
@@ -1406,7 +1387,7 @@ impl MediaRuntime {
             return Ok(());
         };
         for frame in decoded_frames {
-            stream.decoded_samples.extend(frame);
+            stream.decoded.push_back(frame);
         }
         Ok(())
     }
@@ -1414,7 +1395,7 @@ impl MediaRuntime {
     fn mix_inbound_streams_for_playback(&mut self) -> bool {
         let mut popped_frames = Vec::new();
         for stream in self.inbound_streams.values_mut() {
-            if let Some(frame) = drain_decoded_frame(&mut stream.decoded_samples) {
+            if let Some(frame) = stream.decoded.pop_front() {
                 popped_frames.push(frame);
             }
         }
@@ -1457,7 +1438,7 @@ impl MediaRuntime {
             };
             if now.duration_since(last_packet_at) >= timeout
                 && stream.buffered.is_empty()
-                && stream.decoded_samples.is_empty()
+                && stream.decoded.is_empty()
             {
                 stale.push(session_id);
             }
@@ -1575,16 +1556,16 @@ impl MediaRuntime {
             target_loss = 20;
             jitter_target = (self.jitter_tuning.baseline_target_frames + 2)
                 .clamp(RX_JITTER_TARGET_MIN, RX_JITTER_TARGET_MAX);
-            jitter_max = (self.jitter_tuning.baseline_max_frames + 3)
-                .clamp(RX_JITTER_MAX_MIN, RX_JITTER_MAX_MAX);
+            jitter_max =
+                (self.jitter_tuning.baseline_max_frames + 3).clamp(RX_JITTER_MAX_MIN, RX_JITTER_MAX_MAX);
         } else if loss_rate >= 0.06 {
             target_bitrate = (self.codec_tuning.baseline_bitrate_bps * 92 / 100)
                 .clamp(OPUS_BITRATE_MIN_BPS, OPUS_BITRATE_MAX_BPS);
             target_loss = 14;
             jitter_target = (self.jitter_tuning.baseline_target_frames + 1)
                 .clamp(RX_JITTER_TARGET_MIN, RX_JITTER_TARGET_MAX);
-            jitter_max = (self.jitter_tuning.baseline_max_frames + 2)
-                .clamp(RX_JITTER_MAX_MIN, RX_JITTER_MAX_MAX);
+            jitter_max =
+                (self.jitter_tuning.baseline_max_frames + 2).clamp(RX_JITTER_MAX_MIN, RX_JITTER_MAX_MAX);
         } else if loss_rate >= 0.03 {
             target_bitrate = self
                 .codec_tuning
@@ -1676,7 +1657,6 @@ fn collect_decode_actions(
     }
 
     let mut actions = Vec::new();
-    let mut forced_conceal_emitted = false;
     loop {
         let Some(expected) = stream.expected_seq else {
             break;
@@ -1689,19 +1669,13 @@ fn collect_decode_actions(
         }
 
         let Some(next_seq) = stream.buffered.keys().next().copied() else {
-            if force_gap_conceal && !forced_conceal_emitted {
-                actions.push(DecodeAction::ConcealLoss);
-                stream.expected_seq = Some(expected.wrapping_add(OPUS_SEQ_STEP));
-                forced_conceal_emitted = true;
-                continue;
-            }
             break;
         };
         let gap_frames = next_seq.saturating_sub(expected) / OPUS_SEQ_STEP;
         let should_conceal = should_conceal_gap(
             stream.buffered.len(),
             gap_frames,
-            false,
+            force_gap_conceal,
             jitter_tuning.target_frames,
             jitter_tuning.max_frames,
             jitter_tuning.gap_plc_trigger_frames,
@@ -1715,19 +1689,6 @@ fn collect_decode_actions(
     }
 
     actions
-}
-
-fn drain_decoded_frame(decoded_samples: &mut VecDeque<f32>) -> Option<Vec<f32>> {
-    if decoded_samples.len() < OPUS_FRAME_SAMPLES {
-        return None;
-    }
-    let mut frame = Vec::with_capacity(OPUS_FRAME_SAMPLES);
-    for _ in 0..OPUS_FRAME_SAMPLES {
-        if let Some(sample) = decoded_samples.pop_front() {
-            frame.push(sample);
-        }
-    }
-    Some(frame)
 }
 
 async fn run_voice_worker(
@@ -2106,16 +2067,6 @@ mod tests {
     use super::*;
     use crate::core::config::ServerConfig;
 
-    fn jitter_tuning_for_tests() -> JitterTuning {
-        JitterTuning {
-            baseline_target_frames: 4,
-            baseline_max_frames: 10,
-            target_frames: 4,
-            max_frames: 10,
-            gap_plc_trigger_frames: 2,
-        }
-    }
-
     #[test]
     fn derive_auth_profile_uses_superuser_credentials_for_trigger_nickname() {
         let config = AppConfig {
@@ -2267,69 +2218,6 @@ mod tests {
     fn should_send_voice_frame_respects_mic_gate_without_soundboard() {
         assert!(should_send_voice_frame(false, true));
         assert!(!should_send_voice_frame(false, false));
-    }
-
-    #[test]
-    fn drain_decoded_frame_stitches_variable_chunks_into_fixed_playout_frame() {
-        let mut decoded_samples = VecDeque::new();
-        decoded_samples.extend(vec![0.25_f32; 480]);
-        assert!(drain_decoded_frame(&mut decoded_samples).is_none());
-
-        decoded_samples.extend(vec![-0.5_f32; 480]);
-        let frame = drain_decoded_frame(&mut decoded_samples)
-            .expect("960 samples should produce one playout frame");
-        assert_eq!(frame.len(), OPUS_FRAME_SAMPLES);
-        assert_eq!(frame[..480], vec![0.25_f32; 480]);
-        assert_eq!(frame[480..], vec![-0.5_f32; 480]);
-        assert!(decoded_samples.is_empty());
-    }
-
-    #[test]
-    fn drain_decoded_frame_handles_full_and_mixed_chunk_lengths() {
-        let mut decoded_samples = VecDeque::new();
-        decoded_samples.extend(vec![0.1_f32; OPUS_FRAME_SAMPLES]);
-        let first = drain_decoded_frame(&mut decoded_samples)
-            .expect("exact-size chunk should produce one playout frame");
-        assert_eq!(first, vec![0.1_f32; OPUS_FRAME_SAMPLES]);
-
-        decoded_samples.extend(vec![0.3_f32; 120]);
-        decoded_samples.extend(vec![0.4_f32; 840]);
-        let second = drain_decoded_frame(&mut decoded_samples)
-            .expect("mixed chunk sizes should still produce one playout frame");
-        assert_eq!(second[..120], vec![0.3_f32; 120]);
-        assert_eq!(second[120..], vec![0.4_f32; 840]);
-        assert!(decoded_samples.is_empty());
-    }
-
-    #[test]
-    fn collect_decode_actions_does_not_force_conceal_when_buffered_gap_is_small() {
-        let mut stream = InboundVoiceStream {
-            expected_seq: Some(42),
-            started: true,
-            buffered: BTreeMap::from([(43_u64, vec![1_u8, 2_u8, 3_u8])]),
-            decoded_samples: VecDeque::new(),
-            last_packet_at: Some(Instant::now()),
-        };
-
-        let actions = collect_decode_actions(&mut stream, true, jitter_tuning_for_tests());
-        assert!(actions.is_empty());
-        assert_eq!(stream.expected_seq, Some(42));
-    }
-
-    #[test]
-    fn collect_decode_actions_emits_single_plc_for_idle_stream_without_packets() {
-        let mut stream = InboundVoiceStream {
-            expected_seq: Some(100),
-            started: true,
-            buffered: BTreeMap::new(),
-            decoded_samples: VecDeque::new(),
-            last_packet_at: Some(Instant::now()),
-        };
-
-        let actions = collect_decode_actions(&mut stream, true, jitter_tuning_for_tests());
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], DecodeAction::ConcealLoss));
-        assert_eq!(stream.expected_seq, Some(101));
     }
 
     #[test]
