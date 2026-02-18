@@ -1,6 +1,6 @@
 [package]
 name = "harmony-desktop"
-version = "0.12.2"
+version = "0.12.3"
 description = "Harmony desktop voice chat client"
 authors = ["Harmony"]
 license = "MIT"

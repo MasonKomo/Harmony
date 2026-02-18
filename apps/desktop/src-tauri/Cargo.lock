@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "harmony-desktop"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "bytes",
  "cpal",
