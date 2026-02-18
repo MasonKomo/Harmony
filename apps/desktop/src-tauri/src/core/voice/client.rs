@@ -1309,7 +1309,24 @@ impl MediaRuntime {
             };
             self.decode_actions_for_stream(session_id, actions)?;
         }
-        self.mix_inbound_streams_for_playback();
+        let queued_samples = self
+            .output_playback
+            .as_ref()
+            .map(|output| output.stats_snapshot().queued_samples)
+            .unwrap_or(0);
+        let target_samples = OPUS_FRAME_SAMPLES.saturating_mul(self.jitter_tuning.target_frames);
+        let mut mix_rounds = 1_usize;
+        if queued_samples < target_samples {
+            let deficit_samples = target_samples - queued_samples;
+            let deficit_frames = deficit_samples.div_ceil(OPUS_FRAME_SAMPLES);
+            mix_rounds = deficit_frames.clamp(1, self.jitter_tuning.max_frames);
+        }
+
+        for _ in 0..mix_rounds {
+            if !self.mix_inbound_streams_for_playback() {
+                break;
+            }
+        }
         self.cleanup_idle_inbound_streams();
         Ok(())
     }
@@ -1375,7 +1392,7 @@ impl MediaRuntime {
         Ok(())
     }
 
-    fn mix_inbound_streams_for_playback(&mut self) {
+    fn mix_inbound_streams_for_playback(&mut self) -> bool {
         let mut popped_frames = Vec::new();
         for stream in self.inbound_streams.values_mut() {
             if let Some(frame) = stream.decoded.pop_front() {
@@ -1383,7 +1400,7 @@ impl MediaRuntime {
             }
         }
         if popped_frames.is_empty() {
-            return;
+            return false;
         }
 
         let frame_refs = popped_frames
@@ -1408,6 +1425,7 @@ impl MediaRuntime {
         if let Some(output) = &self.output_playback {
             output.push_mono_48k(&self.mix_bus_48k);
         }
+        true
     }
 
     fn cleanup_idle_inbound_streams(&mut self) {

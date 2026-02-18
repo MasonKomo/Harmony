@@ -11,9 +11,9 @@ use super::AudioDevice;
 
 const OUTPUT_QUEUE_SECONDS: f32 = 1.2;
 const OUTPUT_QUEUE_MIN_CAPACITY: usize = 9_600;
-const UNDERFLOW_FADE: f32 = 0.96;
 const CLIP_THRESHOLD: f32 = 0.995;
 const QUEUE_LOG_WINDOW_PUSHES: u32 = 120;
+const PLAYOUT_PREFILL_MS: usize = 45;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OutputPlaybackStats {
@@ -359,7 +359,8 @@ where
     let channels = channels.max(1);
     let sample_rate = sample_rate.max(1);
     let frame_budget_us = 1_000_000_f64 / sample_rate as f64;
-    let mut last_sample = 0.0_f32;
+    let prefill_samples = ((sample_rate as usize) * PLAYOUT_PREFILL_MS / 1_000).max(channels * 8);
+    let mut primed = false;
     let mut underflowing = false;
 
     device
@@ -369,22 +370,24 @@ where
                 let started = Instant::now();
 
                 for frame in data.chunks_mut(channels) {
-                    let mono = if let Some(value) = queue.pop() {
+                    let mono = if !primed && queue.len() < prefill_samples {
+                        0.0
+                    } else if let Some(value) = queue.pop() {
+                        if !primed {
+                            primed = true;
+                        }
                         if underflowing {
                             underflowing = false;
                         }
                         value
                     } else {
+                        primed = false;
                         if !underflowing {
                             underflowing = true;
                             stats.underflow_events.fetch_add(1, Ordering::Relaxed);
                             log::debug!("output stream underflow: queue depth={}", queue.len());
                         }
-                        last_sample *= UNDERFLOW_FADE;
-                        if last_sample.abs() < 0.0002 {
-                            last_sample = 0.0;
-                        }
-                        last_sample
+                        0.0
                     };
 
                     let clipped = mono.clamp(-1.0, 1.0);
@@ -395,7 +398,6 @@ where
                     for sample in frame {
                         *sample = converted;
                     }
-                    last_sample = clipped;
                 }
 
                 let elapsed_us = started.elapsed().as_micros() as u64;
