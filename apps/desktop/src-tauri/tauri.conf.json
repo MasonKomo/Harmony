@@ -1,7 +1,7 @@
 {
   "$schema": "../src-ui/node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Harmony",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "identifier": "com.harmony.desktop",
   "build": {
     "frontendDist": "../src-ui/dist",
